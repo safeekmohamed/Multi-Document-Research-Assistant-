@@ -227,7 +227,7 @@ class FollowUpContextTests(unittest.TestCase):
 class RetrievalCoverageTests(unittest.TestCase):
     def test_semantic_search_requests_every_user_chunk(self):
         collection = Mock()
-        collection.count.return_value = 1234
+        collection.get.return_value = {"ids": [str(index) for index in range(1234)]}
         collection.query.return_value = {
             "ids": [[]],
             "documents": [[]],
@@ -250,13 +250,16 @@ class RetrievalCoverageTests(unittest.TestCase):
             1234,
         )
         self.assertEqual(
-            collection.count.call_args.kwargs["where"],
+            collection.get.call_args.kwargs["where"],
             {"user_id": "test-user"},
         )
 
     def test_source_search_requests_every_chunk_per_source(self):
         collection = Mock()
-        collection.count.return_value = 90
+        collection.get.side_effect = [
+            {"ids": [str(index) for index in range(90)]},
+            {"ids": [str(index) for index in range(90)]},
+        ]
         collection.query.side_effect = [
             {
                 "ids": [["a"]],
@@ -296,7 +299,7 @@ class RetrievalCoverageTests(unittest.TestCase):
         self.assertEqual(
             [
                 call.kwargs["where"]
-                for call in collection.count.call_args_list
+                for call in collection.get.call_args_list
             ],
             [
                 {"$and": [{"user_id": "test-user"}, {"source_id": "a"}]},
@@ -330,6 +333,7 @@ class RetrievalCoverageTests(unittest.TestCase):
             len(reranker.predict.call_args.args[0]),
             len(candidates),
         )
+        self.assertEqual(reranker.predict.call_args.kwargs["batch_size"], 8)
 
     def test_rerank_selection_keeps_semantic_leaders_from_every_source(self):
         candidates = [

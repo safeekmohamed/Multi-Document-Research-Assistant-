@@ -3,8 +3,6 @@ import logging
 import time
 
 from dotenv import load_dotenv
-from sentence_transformers import SentenceTransformer
-
 from app.core.model_cache import synchronized_lru_cache
 
 
@@ -14,6 +12,8 @@ logger = logging.getLogger(__name__)
 
 @synchronized_lru_cache(maxsize=1)
 def get_embedding_model():
+    from sentence_transformers import SentenceTransformer
+
     model_name = os.getenv("EMBEDDING_MODEL")
 
     if not model_name:

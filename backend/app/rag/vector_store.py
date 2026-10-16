@@ -145,7 +145,7 @@ def search_semantic(
 
     if limit is None:
         count_started_at = time.perf_counter()
-        result_limit = collection.count(where=where)
+        result_limit = len(collection.get(where=where, include=[]).get("ids", []))
         logger.info(
             "Chroma filtered chunk count completed: elapsed_seconds=%.3f",
             time.perf_counter() - count_started_at,
@@ -331,7 +331,7 @@ def search_semantic_by_sources(
             ]
         }
         count_started_at = time.perf_counter()
-        source_count = collection.count(where=where)
+        source_count = len(collection.get(where=where, include=[]).get("ids", []))
         logger.info(
             "Chroma source chunk count completed: elapsed_seconds=%.3f",
             time.perf_counter() - count_started_at,

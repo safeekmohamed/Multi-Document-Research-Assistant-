@@ -1,24 +1,27 @@
 ﻿import re
 
-from langchain_text_splitters import (
-    RecursiveCharacterTextSplitter,
-)
+from functools import lru_cache
 
-splitter = RecursiveCharacterTextSplitter(
-    chunk_size=1000,
-    chunk_overlap=150,
-    separators=[
-        "\n\n",
-        "\n",
-        ". ",
-        "? ",
-        "! ",
-        "; ",
-        ", ",
-        " ",
-        "",
-    ],
-)
+
+@lru_cache(maxsize=1)
+def _get_splitter():
+    from langchain_text_splitters import RecursiveCharacterTextSplitter
+
+    return RecursiveCharacterTextSplitter(
+        chunk_size=1000,
+        chunk_overlap=150,
+        separators=[
+            "\n\n",
+            "\n",
+            ". ",
+            "? ",
+            "! ",
+            "; ",
+            ", ",
+            " ",
+            "",
+        ],
+    )
 
 SECTION_PATTERN = re.compile(
     r"^\s*(\d+(?:\.\d+)*)[\.\)]?\s+(.+?)\s*$"
@@ -270,7 +273,7 @@ def split_document_pages(
 
         if not section_blocks:
 
-            split_texts = splitter.split_text(
+            split_texts = _get_splitter().split_text(
                 text
             )
 
@@ -301,7 +304,7 @@ def split_document_pages(
             if not block_text:
                 continue
 
-            split_texts = splitter.split_text(
+            split_texts = _get_splitter().split_text(
                 block_text
             )
 
@@ -356,7 +359,7 @@ def split_text(
 
     return [
         chunk.strip()
-        for chunk in splitter.split_text(
+        for chunk in _get_splitter().split_text(
             text
         )
         if chunk.strip()

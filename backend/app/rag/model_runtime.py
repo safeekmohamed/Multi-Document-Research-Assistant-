@@ -2,7 +2,6 @@ import logging
 import time
 
 from app.embeddings.embedding_model import get_embedding_model
-from app.rag.retriever import get_reranker
 
 
 logger = logging.getLogger(__name__)
@@ -14,13 +13,10 @@ def get_model_warmup_error() -> str | None:
 
 
 def warmup_rag_models() -> None:
-    """Load cached Hugging Face models before the first chat request."""
+    """Warm only embeddings; defer the larger reranker to first use."""
     global _warmup_error
     _warmup_error = None
-    for component, loader in (
-        ("embedding", get_embedding_model),
-        ("reranker", get_reranker),
-    ):
+    for component, loader in (("embedding", get_embedding_model),):
         started_at = time.perf_counter()
         try:
             loader()

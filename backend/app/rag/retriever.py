@@ -8,8 +8,6 @@ from pathlib import Path
 from dotenv import load_dotenv
 load_dotenv()
 
-from sentence_transformers import CrossEncoder
-
 from app.database.mongodb import documents_collection
 from app.core.model_cache import synchronized_lru_cache
 from app.documents.document_service import classify_document
@@ -22,6 +20,13 @@ from app.rag.vector_store import (
 
 logger = logging.getLogger(__name__)
 RERANK_CANDIDATES_PER_SOURCE = 12
+RERANK_BATCH_SIZE = 8
+
+
+def reranking_enabled() -> bool:
+    return os.getenv("RAG_RERANKER_ENABLED", "true").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
 
 
 WORD_PATTERN = re.compile(r"[a-zA-Z0-9]+")
@@ -232,6 +237,11 @@ RESUME_QUERY_INTENT_WORDS = {
 
 @synchronized_lru_cache(maxsize=1)
 def get_reranker():
+    if not reranking_enabled():
+        raise RuntimeError("Reranking is disabled by RAG_RERANKER_ENABLED.")
+
+    from sentence_transformers import CrossEncoder
+
     model_name = os.getenv(
         "RERANKER_MODEL",
         "cross-encoder/ms-marco-MiniLM-L6-v2",
@@ -1738,11 +1748,20 @@ def rerank_candidates(
 ) -> list[dict]:
     if not candidates:
         return []
+    if not reranking_enabled():
+        return sorted(
+            candidates,
+            key=lambda item: (
+                item.get("semantic_score", 0.0),
+                item.get("lexical_score", 0.0),
+            ),
+            reverse=True,
+        )
     started_at = time.perf_counter()
     try:
         scores = get_reranker().predict(
             [(query, item.get("content", "")) for item in candidates],
-            batch_size=32,
+            batch_size=RERANK_BATCH_SIZE,
             show_progress_bar=False,
         )
         raw_scores = [float(score) for score in scores]

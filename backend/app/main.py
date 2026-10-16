@@ -94,7 +94,7 @@ async def lifespan(
     else:
         logger.warning(llm_status)
 
-    if os.getenv("RAG_MODEL_WARMUP_ON_STARTUP", "true").strip().lower() in {"1", "true", "yes", "on"}:
+    if os.getenv("RAG_MODEL_WARMUP_ON_STARTUP", "false").strip().lower() in {"1", "true", "yes", "on"}:
         try:
             await asyncio.to_thread(warmup_rag_models)
         except Exception:

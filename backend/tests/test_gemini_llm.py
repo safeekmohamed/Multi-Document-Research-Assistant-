@@ -127,13 +127,15 @@ class LLMProviderTests(unittest.TestCase):
     def test_startup_warns_without_logging_a_key_when_unconfigured(self):
         async def exercise_lifespan():
             with (
+                patch.dict(os.environ, {}, clear=True),
                 patch.object(main, "llm_configuration_warning", return_value="Ollama model is not installed."),
-                patch.object(main, "warmup_rag_models"),
+                patch.object(main, "warmup_rag_models") as warmup,
                 patch.object(main, "initialize_database"),
                 self.assertLogs(main.logger, level=logging.WARNING) as captured,
             ):
                 async with main.lifespan(main.app):
                     pass
+            warmup.assert_not_called()
             self.assertTrue(any("Ollama model is not installed" in line for line in captured.output))
 
         import asyncio

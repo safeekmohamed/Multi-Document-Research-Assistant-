@@ -23,6 +23,8 @@ google-auth==2.61.0
 requests==2.34.2
 
 # Embeddings, retrieval, and vector storage
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.14.0+cpu
 sentence-transformers==6.1.0
 chromadb==1.5.9
 
