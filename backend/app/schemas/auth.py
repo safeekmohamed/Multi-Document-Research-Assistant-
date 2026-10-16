@@ -24,3 +24,18 @@ class TokenResponse(BaseModel):
 
 class ResendOTPRequest(BaseModel):
     email: EmailStr
+
+
+class PasswordSetupRequest(BaseModel):
+    email: EmailStr
+
+
+class PasswordSetupConfirmRequest(BaseModel):
+    email: EmailStr
+    otp_code: str = Field(pattern=r"^\d{6}$")
+    password: str = Field(min_length=6, max_length=128)
+
+
+class GooglePasswordSetupRequest(BaseModel):
+    setup_code: str = Field(min_length=32, max_length=128)
+    password: str = Field(min_length=6, max_length=128)

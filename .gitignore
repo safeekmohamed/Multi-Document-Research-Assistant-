@@ -1,8 +1,73 @@
-@"
-venv/
+# Environment files; keep safe example templates trackable.
 .env
+.env.*
+**/.env
+**/.env.*
+!.env.example
+!**/.env.example
+
+# Credentials and private keys.
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+**/credentials.json
+**/credentials.*.json
+**/credentials
+**/*service-account*.json
+**/application_default_credentials.json
+**/.aws/credentials
+**/.netrc
+**/.pypirc
+id_rsa
+id_dsa
+id_ecdsa
+id_ed25519
+*.ppk
+
+# Python environments and generated files.
+venv/
+.venv/
+env/
+**/venv/
+**/.venv/
+**/env/
 __pycache__/
-*.pyc
+**/__pycache__/
+*.py[cod]
+*$py.class
+
+# Node and frontend build output.
+node_modules/
+**/node_modules/
+.next/
+**/.next/
+out/
+**/out/
+coverage/
+**/coverage/
+
+# Common caches and generated application data.
+.pytest_cache/
+**/.pytest_cache/
+.mypy_cache/
+**/.mypy_cache/
+.ruff_cache/
+**/.ruff_cache/
+.cache/
+**/.cache/
+cache/
+**/cache/
+.coverage
 chroma_data/
+**/chroma_data/
 uploads/
-"@ | Out-File -Encoding utf8 .gitignore
+**/uploads/
+
+# Archives.
+*.zip
+
+# Superseded dependency snapshot; use backend/requirements.txt.
+/requirements-new.txt

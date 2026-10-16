@@ -7,9 +7,11 @@ from fastapi import (
 from app.auth.jwt import (
     get_current_user,
 )
+
 from app.schemas.url import (
     URLRequest,
 )
+
 from app.urls.url_service import (
     add_url_source,
     list_user_urls,
@@ -38,9 +40,15 @@ def add_url(
             url=str(data.url),
         )
 
-    except Exception as error:
+    except ValueError as error:
         raise HTTPException(
             status_code=400,
+            detail=str(error),
+        )
+
+    except Exception as error:
+        raise HTTPException(
+            status_code=500,
             detail=(
                 f"URL processing failed: "
                 f"{error}"
@@ -56,12 +64,13 @@ def web_search(
     ),
 ):
     try:
-        return {
-            "query": query,
-            "results": search_web(
-                query
-            ),
-        }
+        return search_web(query)
+
+    except ValueError as error:
+        raise HTTPException(
+            status_code=400,
+            detail=str(error),
+        )
 
     except Exception as error:
         raise HTTPException(

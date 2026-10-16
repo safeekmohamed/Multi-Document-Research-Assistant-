@@ -139,6 +139,21 @@ def get_conversation_messages(
                     "citations",
                     [],
                 ),
+                "sources": message.get(
+                    "sources",
+                    message.get("citations", []),
+                ),
+                "searched_files": message.get(
+                    "searched_files",
+                    [],
+                ),
+                "source_attribution_version": message.get(
+                    "source_attribution_version",
+                ),
+                "attachments": message.get(
+                    "attachments",
+                    [],
+                ),
                 "created_at": (
                     message[
                         "created_at"
@@ -147,4 +162,51 @@ def get_conversation_messages(
             }
             for message in messages
         ],
+    }
+
+
+@router.delete(
+    "/conversations/{conversation_id}"
+)
+def delete_conversation(
+    conversation_id: str,
+    current_user: dict = Depends(
+        get_current_user
+    ),
+):
+    if not ObjectId.is_valid(
+        conversation_id
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid conversation ID",
+        )
+
+    user_id = str(
+        current_user["_id"]
+    )
+
+    result = conversations_collection.delete_one(
+        {
+            "_id": ObjectId(conversation_id),
+            "user_id": user_id,
+        }
+    )
+
+    if result.deleted_count == 0:
+        raise HTTPException(
+            status_code=404,
+            detail="Conversation not found",
+        )
+
+    messages_collection.delete_many(
+        {
+            "conversation_id": conversation_id,
+            "user_id": user_id,
+        }
+    )
+
+    return {
+        "message": "Conversation deleted successfully",
+        "conversation_id": conversation_id,
     }

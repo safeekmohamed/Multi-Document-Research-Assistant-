@@ -1,32 +1,37 @@
 from pathlib import Path
 
 from app.documents.extractor import (
+    extract_csv,
     extract_docx,
+    extract_excel,
     extract_pdf,
+    extract_pptx,
     extract_txt,
 )
 
 
-def load_document(file_path: str):
+LOADERS = {
+    ".pdf": extract_pdf,
+    ".docx": extract_docx,
+    ".txt": extract_txt,
+    ".csv": extract_csv,
+    ".xlsx": extract_excel,
+    ".pptx": extract_pptx,
+}
+
+
+def load_document(
+    file_path: str,
+) -> list[dict]:
     extension = Path(
         file_path
     ).suffix.lower()
 
-    if extension == ".pdf":
-        return extract_pdf(
-            file_path
+    loader = LOADERS.get(extension)
+
+    if loader is None:
+        raise ValueError(
+            "Supported file types are PDF, DOCX, TXT, CSV, XLSX and PPTX"
         )
 
-    if extension == ".docx":
-        return extract_docx(
-            file_path
-        )
-
-    if extension == ".txt":
-        return extract_txt(
-            file_path
-        )
-
-    raise ValueError(
-        "Supported file types are PDF, DOCX and TXT"
-    )
+    return loader(file_path)

@@ -31,4 +31,8 @@ def get_me(
             "is_verified",
             False,
         ),
+        "role": current_user.get(
+            "role",
+            "user",
+        ),
     }

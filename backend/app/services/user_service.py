@@ -6,70 +6,194 @@ from app.auth.password import (
     hash_password,
     verify_password,
 )
-from app.database.mongodb import users_collection
 
+from app.database.mongodb import (
+    users_collection,
+)
 
-def find_user_by_email(email: str):
+def find_user_by_email(
+    email: str,
+):
+
     return users_collection.find_one(
-        {"email": email.lower()}
+        {
+            "email": email.lower()
+        }
     )
-
 
 def create_user(
     name: str,
     email: str,
     password: str,
 ):
+
     user = {
         "name": name,
         "email": email.lower(),
-        "password_hash": hash_password(password),
+        "password_hash": hash_password(
+            password
+        ),
         "is_verified": False,
-        "created_at": datetime.now(timezone.utc),
+        "is_blocked": False,
+        "role": "user",
+        "created_at": datetime.now(
+            timezone.utc
+        ),
     }
 
-    result = users_collection.insert_one(user)
+    result = users_collection.insert_one(
+        user
+    )
 
     return result.inserted_id
 
+def verify_user(
+    email: str,
+):
 
-def verify_user(email: str):
     users_collection.update_one(
-        {"email": email.lower()},
+        {
+            "email": email.lower()
+        },
         {
             "$set": {
                 "is_verified": True,
-                "verified_at": datetime.now(timezone.utc),
+                "verified_at": datetime.now(
+                    timezone.utc
+                ),
             }
         },
     )
-
 
 def authenticate_user(
     email: str,
     password: str,
 ):
-    user = find_user_by_email(email)
+
+    user = find_user_by_email(
+        email
+    )
 
     if not user:
+
         return None
 
-    if not user.get("is_verified", False):
-        return None
-
-    if not verify_password(
-        password,
-        user.get("password_hash", ""),
+    if not user.get(
+        "is_verified",
+        False,
     ):
+
+        return None
+
+    if user.get(
+        "is_blocked",
+        False,
+    ):
+
+        return None
+
+    password_hash = user.get("password_hash")
+    if not password_hash or not verify_password(
+        password,
+        password_hash,
+    ):
+
         return None
 
     return user
 
+def get_user_by_id(
+    user_id: str,
+):
 
-def get_user_by_id(user_id: str):
-    if not ObjectId.is_valid(user_id):
+    if not ObjectId.is_valid(
+        user_id
+    ):
+
         return None
 
     return users_collection.find_one(
-        {"_id": ObjectId(user_id)}
+        {
+            "_id": ObjectId(
+                user_id
+            )
+        }
+    )
+
+def block_user(
+    user_id: str,
+):
+
+    if not ObjectId.is_valid(
+        user_id
+    ):
+
+        raise ValueError(
+            "Invalid user ID"
+        )
+
+    result = users_collection.update_one(
+        {
+            "_id": ObjectId(
+                user_id
+            ),
+            "role": {
+                "$ne": "admin"
+            },
+        },
+        {
+            "$set": {
+                "is_blocked": True,
+                "blocked_at": datetime.now(
+                    timezone.utc
+                ),
+            }
+        },
+    )
+
+    if result.matched_count == 0:
+
+        return None
+
+    return get_user_by_id(
+        user_id
+    )
+
+def unblock_user(
+    user_id: str,
+):
+
+    if not ObjectId.is_valid(
+        user_id
+    ):
+
+        raise ValueError(
+            "Invalid user ID"
+        )
+
+    result = users_collection.update_one(
+        {
+            "_id": ObjectId(
+                user_id
+            ),
+            "role": {
+                "$ne": "admin"
+            },
+        },
+        {
+            "$set": {
+                "is_blocked": False,
+            },
+            "$unset": {
+                "blocked_at": "",
+            },
+        },
+    )
+
+    if result.matched_count == 0:
+
+        return None
+
+    return get_user_by_id(
+        user_id
     )

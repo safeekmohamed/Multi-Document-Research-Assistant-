@@ -1,10 +1,12 @@
 import requests
 from bs4 import BeautifulSoup
+from app.urls.security import validate_public_http_url
 
 
 def fetch_url(
     url: str,
 ):
+    validate_public_http_url(url)
     response = requests.get(
         url,
         headers={
@@ -14,7 +16,11 @@ def fetch_url(
             )
         },
         timeout=15,
+        allow_redirects=False,
     )
+
+    if 300 <= response.status_code < 400:
+        raise ValueError("Website redirected. Submit its final public URL instead.")
 
     response.raise_for_status()
 

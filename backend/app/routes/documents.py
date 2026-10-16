@@ -1,33 +1,140 @@
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    HTTPException,
+    UploadFile,
+)
+from fastapi.responses import StreamingResponse
+from starlette.background import BackgroundTask
+
+from bson import ObjectId
+from urllib.parse import quote, urlsplit
+import time
+from io import BytesIO
+import tempfile
+import requests
+import cloudinary.utils
+from openpyxl import load_workbook
 
 from app.auth.jwt import get_current_user
+from app.database.mongodb import (
+    documents_collection,
+)
 from app.documents.document_service import (
+    delete_user_document,
     list_user_documents,
     process_uploaded_document,
-    delete_user_document,
 )
+
+
 router = APIRouter(
     prefix="/documents",
     tags=["Documents"],
 )
 
+MAX_VIEW_SIZE = 50 * 1024 * 1024
+
+
+def _owned_file_document(document_id: str, current_user: dict):
+    document_filter = {"user_id": str(current_user["_id"])}
+    if ObjectId.is_valid(document_id):
+        document_filter["_id"] = ObjectId(document_id)
+    else:
+        document_filter["source_id"] = document_id
+    document = documents_collection.find_one(document_filter)
+    if not document:
+        raise HTTPException(status_code=404, detail="Document not found")
+    if document.get("source_type", "file") != "file":
+        raise HTTPException(status_code=400, detail="This source is not an uploaded file")
+    return document
+
+
+def _cloudinary_response(document):
+    public_id = document.get("cloudinary_public_id")
+    cloudinary_url = document.get("cloudinary_url")
+    if not public_id and cloudinary_url:
+        parsed_url = urlsplit(cloudinary_url)
+        if parsed_url.scheme == "https" and parsed_url.hostname == "res.cloudinary.com":
+            path_parts = parsed_url.path.strip("/").split("/")
+            try:
+                upload_index = path_parts.index("upload")
+                if path_parts[upload_index - 1] == "raw":
+                    resource_parts = path_parts[upload_index + 1 :]
+                    if resource_parts and resource_parts[0].startswith("v") and resource_parts[0][1:].isdigit():
+                        resource_parts = resource_parts[1:]
+                    public_id = "/".join(resource_parts)
+            except (ValueError, IndexError):
+                public_id = None
+    if not public_id:
+        raise HTTPException(status_code=404, detail="Cloudinary file reference not found")
+
+    file_response = None
+    try:
+        download_url = cloudinary.utils.private_download_url(
+            public_id,
+            str(document.get("file_type") or "pdf").lstrip("."),
+            resource_type="raw",
+            type="upload",
+            expires_at=int(time.time()) + 300,
+            secure=True,
+        )
+        parsed_download_url = urlsplit(download_url)
+        if parsed_download_url.scheme != "https" or parsed_download_url.hostname != "api.cloudinary.com":
+            raise ValueError("Cloudinary generated an invalid download URL")
+        file_response = requests.get(download_url, stream=True, timeout=30, allow_redirects=False)
+        if file_response.status_code == 404:
+            file_response.close()
+            raise HTTPException(status_code=404, detail="Stored Cloudinary file was not found")
+        if not 200 <= file_response.status_code < 300:
+            raise requests.HTTPError("Cloudinary returned a non-success response", response=file_response)
+        content_length = file_response.headers.get("Content-Length")
+        if content_length and content_length.isdigit() and int(content_length) > MAX_VIEW_SIZE:
+            file_response.close()
+            raise HTTPException(status_code=413, detail="This file exceeds the 50 MB preview limit.")
+        return file_response
+    except HTTPException:
+        raise
+    except Exception as error:
+        response = file_response or getattr(error, "response", None)
+        if response is not None:
+            response.close()
+        raise HTTPException(status_code=502, detail="Unable to retrieve the stored document") from error
+
 
 @router.post("/upload")
 async def upload_documents(
     files: list[UploadFile] = File(
-        description="Upload one or more PDF, DOCX, or TXT files"
+        description=(
+            "Upload one or more PDF, DOCX, or TXT files"
+        )
     ),
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(
+        get_current_user
+    ),
 ):
+    if not files:
+        raise HTTPException(
+            status_code=400,
+            detail="No files were uploaded",
+        )
+
     results = []
 
     for file in files:
+        filename = (
+            file.filename
+            or "document"
+        )
+
         try:
             content = await file.read()
 
             result = process_uploaded_document(
-                user_id=str(current_user["_id"]),
-                filename=file.filename or "document",
+                user_id=str(
+                    current_user["_id"]
+                ),
+                filename=filename,
                 content=content,
             )
 
@@ -42,39 +149,159 @@ async def upload_documents(
         except Exception as error:
             raise HTTPException(
                 status_code=500,
-                detail=f"Document processing failed: {error}",
+                detail=(
+                    f"Document processing failed: "
+                    f"{error}"
+                ),
             )
 
     return {
-        "message": "Documents processed successfully",
+        "message": (
+            "Documents processed successfully"
+        ),
         "documents": results,
     }
 
 
 @router.get("/")
 def get_documents(
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(
+        get_current_user
+    ),
 ):
     return {
         "documents": list_user_documents(
-            str(current_user["_id"])
+            str(
+                current_user["_id"]
+            )
         )
     }
-@router.delete("/{document_id}")
-def delete_document(
+
+
+@router.get("/view/{document_id}")
+def view_document(
+    document_id: str,
+    current_user: dict = Depends(
+        get_current_user
+    ),
+):
+    document = _owned_file_document(document_id, current_user)
+    file_response = _cloudinary_response(document)
+    spool = tempfile.SpooledTemporaryFile(max_size=2 * 1024 * 1024, mode="w+b")
+    total_size = 0
+    try:
+        for chunk in file_response.iter_content(chunk_size=64 * 1024):
+            if not chunk:
+                continue
+            total_size += len(chunk)
+            if total_size > MAX_VIEW_SIZE:
+                raise HTTPException(status_code=413, detail="This file exceeds the 50 MB preview limit.")
+            spool.write(chunk)
+    except HTTPException:
+        spool.close()
+        file_response.close()
+        raise
+    except Exception as error:
+        spool.close()
+        file_response.close()
+        raise HTTPException(status_code=502, detail="Unable to retrieve the stored document") from error
+    finally:
+        file_response.close()
+    spool.seek(0)
+
+    filename = quote(
+        str(document.get("filename") or "document"),
+        safe="",
+    )
+    headers = {
+        "Content-Disposition": f"inline; filename*=UTF-8''{filename}",
+        "X-Content-Type-Options": "nosniff",
+        "X-Document-File-Type": str(document.get("file_type") or ""),
+        "X-Document-Filename": quote(str(document.get("filename") or "document"), safe=""),
+    }
+    headers["Content-Length"] = str(total_size)
+
+    return StreamingResponse(
+        spool,
+        media_type=file_response.headers.get(
+            "Content-Type",
+            "application/octet-stream",
+        ),
+        headers=headers,
+        background=BackgroundTask(spool.close),
+    )
+
+
+@router.get("/preview/{document_id}")
+def preview_document_data(
     document_id: str,
     current_user: dict = Depends(get_current_user),
 ):
+    document = _owned_file_document(document_id, current_user)
+    if str(document.get("file_type") or "").lower() != "xlsx":
+        raise HTTPException(status_code=415, detail="Structured preview is available for XLSX files only")
+    file_response = _cloudinary_response(document)
+    try:
+        content_buffer = bytearray()
+        for chunk in file_response.iter_content(chunk_size=64 * 1024):
+            content_buffer.extend(chunk)
+            if len(content_buffer) > MAX_VIEW_SIZE:
+                raise HTTPException(status_code=413, detail="This file exceeds the 50 MB preview limit.")
+        content = bytes(content_buffer)
+    except HTTPException:
+        raise
+    except Exception as error:
+        raise HTTPException(status_code=502, detail="Unable to retrieve the stored document") from error
+    finally:
+        file_response.close()
+    try:
+        workbook = load_workbook(BytesIO(content), read_only=True, data_only=True)
+        sheets = []
+        was_truncated = False
+        for sheet in workbook.worksheets:
+            sheet_rows = []
+            max_row = min(sheet.max_row or 0, 501)
+            max_column = min(sheet.max_column or 0, 51)
+            was_truncated = was_truncated or (sheet.max_row or 0) > 500 or (sheet.max_column or 0) > 50
+            for row in sheet.iter_rows(min_row=1, max_row=max_row, max_col=max_column, values_only=True):
+                values = ["" if value is None else str(value) for value in row]
+                while values and not values[-1]:
+                    values.pop()
+                sheet_rows.append(values)
+            sheets.append({"name": sheet.title, "rows": sheet_rows})
+        workbook.close()
+    except Exception as error:
+        raise HTTPException(status_code=422, detail="The stored XLSX file could not be parsed") from error
+    return {
+        "filename": document.get("filename") or "document.xlsx",
+        "sheets": sheets,
+        "truncated": was_truncated,
+    }
+
+
+@router.delete("/{document_id}")
+def delete_document(
+    document_id: str,
+    current_user: dict = Depends(
+        get_current_user
+    ),
+):
     try:
         document = delete_user_document(
-            user_id=str(current_user["_id"]),
+            user_id=str(
+                current_user["_id"]
+            ),
             document_id=document_id,
         )
 
         return {
-            "message": "Document deleted successfully",
+            "message": (
+                "Document deleted successfully"
+            ),
             "document": {
-                "id": str(document["_id"]),
+                "id": str(
+                    document["_id"]
+                ),
                 "filename": document.get(
                     "filename",
                     "",
@@ -91,5 +318,8 @@ def delete_document(
     except Exception as error:
         raise HTTPException(
             status_code=500,
-            detail=f"Document deletion failed: {error}",
+            detail=(
+                f"Document deletion failed: "
+                f"{error}"
+            ),
         )

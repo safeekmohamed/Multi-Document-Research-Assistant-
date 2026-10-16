@@ -1,9 +1,14 @@
 import hashlib
+import os
 import secrets
 from datetime import datetime, timedelta, timezone
 
-from app.core.config import settings
+from dotenv import load_dotenv
+
 from app.database.mongodb import otp_collection
+
+
+load_dotenv()
 
 
 def generate_otp() -> str:
@@ -26,13 +31,17 @@ def save_otp(
     expires_at = (
         datetime.now(timezone.utc)
         + timedelta(
-            minutes=settings.OTP_EXPIRE_MINUTES
+            minutes=int(
+                os.getenv(
+                    "OTP_EXPIRE_MINUTES",
+                    "10",
+                )
+            )
         )
     )
 
     current_time = datetime.now(timezone.utc)
 
-    # Mark any previous OTP for this email as used
     otp_collection.update_many(
         {
             "email": email,
@@ -45,9 +54,6 @@ def save_otp(
         },
     )
 
-    # Because email has a unique index,
-    # update the existing OTP document instead
-    # of inserting another document.
     otp_collection.update_one(
         {
             "email": email,
