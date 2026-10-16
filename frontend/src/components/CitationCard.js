@@ -3,6 +3,7 @@ import { openDocument } from "@/lib/api";
 export default function CitationCard({
   citation,
   sourceNumber,
+  summaryOnly = false,
 }) {
   const filename =
     citation?.filename ||
@@ -38,9 +39,11 @@ export default function CitationCard({
 
       <div className="flex items-start gap-3">
 
-        <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-indigo-50 text-xs font-bold text-indigo-600">
-          {sourceNumber}
-        </div>
+        {!summaryOnly && (
+          <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-indigo-50 text-xs font-bold text-indigo-600">
+            {sourceNumber}
+          </div>
+        )}
 
         <div className="min-w-0">
 
@@ -54,13 +57,13 @@ export default function CitationCard({
             </p>
           )}
 
-          {sourceType && sourceType !== "none" && (
+          {!summaryOnly && sourceType && sourceType !== "none" && (
             <p className="mt-1 text-xs capitalize text-slate-500">
               {sourceType}
             </p>
           )}
 
-          {sourceIdentifier && (
+          {!summaryOnly && sourceIdentifier && (
             <p
               className="mt-1 max-w-full truncate text-[10px] text-slate-400"
               title={`Source ID: ${sourceIdentifier}`}
@@ -75,14 +78,14 @@ export default function CitationCard({
             </p>
           )}
 
-          {sections.length > 0 && (
+          {!summaryOnly && sections.length > 0 && (
             <p className="mt-1 text-xs text-slate-500">
               {sections.length > 1 ? "Sections" : "Section"}{" "}
               {sections.join(", ")}
             </p>
           )}
 
-          {snippets.length > 0 && (
+          {!summaryOnly && snippets.length > 0 && (
             <ul className="mt-2 space-y-1.5">
               {snippets.map((snippet, index) => (
                 <li
@@ -100,7 +103,7 @@ export default function CitationCard({
             </ul>
           )}
 
-          {citation?.url && (
+          {!summaryOnly && citation?.url && (
             <a
               className="mt-1 block truncate text-xs text-indigo-600 hover:underline"
               href={citation.url}
@@ -111,7 +114,7 @@ export default function CitationCard({
             </a>
           )}
 
-          {!isMissing &&
+          {!summaryOnly && !isMissing &&
             citation?.source_type === "file" &&
             (citation?.document_id || citation?.source_id) && (
             <button

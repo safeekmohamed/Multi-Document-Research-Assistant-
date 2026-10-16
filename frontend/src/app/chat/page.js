@@ -46,6 +46,7 @@ function AnswerAttribution({ message }) {
               key={getCitationIdentity(citation)}
               citation={citation}
               sourceNumber={index + 1}
+              summaryOnly
             />
           ))}
         </div>
