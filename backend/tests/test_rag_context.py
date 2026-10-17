@@ -307,6 +307,44 @@ class RetrievalCoverageTests(unittest.TestCase):
             ],
         )
 
+    def test_bounded_source_search_skips_full_count_and_caps_combined_results(self):
+        collection = Mock()
+
+        def query(**kwargs):
+            source_id = kwargs["where"]["$and"][1]["source_id"]
+            count = kwargs["n_results"]
+            ids = [f"{source_id}-{index}" for index in range(count)]
+            return {
+                "ids": [ids],
+                "documents": [[f"chunk {item}" for item in ids]],
+                "metadatas": [[{"source_id": source_id} for _ in ids]],
+                "distances": [[0.1] * count],
+            }
+
+        collection.query.side_effect = query
+        with (
+            patch.object(vector_store, "get_chroma_collection", return_value=collection),
+            patch.object(vector_store, "create_embeddings", return_value=[[0.1, 0.2]]),
+        ):
+            results = vector_store.search_semantic_by_sources(
+                user_id="owner-a",
+                query="compare resumes",
+                source_filters=[
+                    {"source_id": "resume-a"},
+                    {"source_id": "resume-b"},
+                    {"source_id": "resume-c"},
+                ],
+                limit=5,
+            )
+
+        self.assertEqual([call.kwargs["n_results"] for call in collection.query.call_args_list], [2, 2, 1])
+        self.assertEqual(len(results["ids"]), 5)
+        collection.get.assert_not_called()
+        self.assertTrue(all(
+            call.kwargs["where"]["$and"][0] == {"user_id": "owner-a"}
+            for call in collection.query.call_args_list
+        ))
+
     def test_reranking_has_no_fixed_candidate_slice(self):
         candidates = [
             {
@@ -368,6 +406,24 @@ class RetrievalCoverageTests(unittest.TestCase):
                 for source in ("source-a", "source-b", "source-c")
             )
         )
+
+    def test_rerank_selection_enforces_total_candidate_budget(self):
+        candidates = [
+            {
+                "id": f"source-{source}-{index}",
+                "content": f"evidence {source}-{index}",
+                "metadata": {"source_id": f"source-{source}"},
+                "semantic_score": 1.0 - (source * 10 + index) / 100,
+                "lexical_score": 0.5,
+            }
+            for source in range(12)
+            for index in range(20)
+        ]
+
+        selected = select_rerank_candidates(candidates, total_limit=24)
+
+        self.assertEqual(len(selected), 24)
+        self.assertEqual(selected[0]["id"], "source-0-0")
 
     def test_cleanup_preserves_all_sources_when_limit_is_unbounded(self):
         candidates = [
@@ -1071,6 +1127,14 @@ class RetrievalBehaviorTests(unittest.TestCase):
 
 
 class HybridLexicalRetrievalTests(unittest.TestCase):
+    def test_user_chunk_read_honors_limit_and_user_filter(self):
+        collection = Mock()
+        with patch.object(vector_store, "get_chroma_collection", return_value=collection):
+            vector_store.get_all_user_chunks("owner-a", limit=19)
+
+        self.assertEqual(collection.get.call_args.kwargs["limit"], 19)
+        self.assertEqual(collection.get.call_args.kwargs["where"], {"user_id": "owner-a"})
+
     def test_bm25_independently_finds_exact_terms_semantic_search_missed(self):
         chunks = {
             "ids": ["exact", "unrelated"],
@@ -1139,10 +1203,35 @@ class HybridLexicalRetrievalTests(unittest.TestCase):
                 limit=4,
             )
 
-        lexical_index.assert_called_once_with(user_id="user-a", file_type=None)
+        lexical_index.assert_called_once_with(
+            user_id="user-a",
+            file_type=None,
+            limit=retriever.lexical_chunk_limit(),
+        )
         self.assertEqual([item["id"] for item in results], ["lexical-only"])
         self.assertEqual(results[0]["metadata"]["page"], 3)
         self.assertGreater(results[0]["bm25_score"], 0)
+
+    def test_hybrid_retrieval_passes_configured_semantic_and_lexical_limits(self):
+        empty = {"ids": [[]], "documents": [[]], "metadatas": [[]], "distances": [[]]}
+        chunks = {"ids": [], "documents": [], "metadatas": []}
+        with (
+            patch.dict("os.environ", {
+                "RAG_SEMANTIC_CANDIDATE_LIMIT": "17",
+                "RAG_LEXICAL_CHUNK_LIMIT": "23",
+            }),
+            patch.object(retriever, "search_semantic", return_value=empty) as semantic_search,
+            patch.object(retriever, "get_all_user_chunks", return_value=chunks) as lexical_search,
+        ):
+            results = retriever.hybrid_retrieve(
+                user_id="user-a",
+                query="What is in my uploaded material?",
+                limit=8,
+            )
+
+        self.assertEqual(results, [])
+        self.assertEqual(semantic_search.call_args.kwargs["limit"], 17)
+        self.assertEqual(lexical_search.call_args.kwargs["limit"], 23)
 
 
 if __name__ == "__main__":

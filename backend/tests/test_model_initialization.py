@@ -109,6 +109,16 @@ class ModelInitializationTests(unittest.TestCase):
         self.assertTrue(all("normalized_rerank_score" not in item for item in ranked))
         reranker_loader.assert_not_called()
 
+    def test_render_defaults_to_low_memory_ranking_and_local_defaults_to_reranking(self):
+        with patch.dict("os.environ", {"RENDER": "true"}, clear=True):
+            self.assertFalse(retriever.reranking_enabled())
+
+        with patch.dict("os.environ", {}, clear=True):
+            self.assertTrue(retriever.reranking_enabled())
+
+        with patch.dict("os.environ", {"RENDER": "true", "RAG_RERANKER_ENABLED": "true"}, clear=True):
+            self.assertTrue(retriever.reranking_enabled())
+
     def test_chat_fails_fast_if_startup_warmup_failed(self):
         with (
             patch.object(
@@ -126,6 +136,29 @@ class ModelInitializationTests(unittest.TestCase):
 
         self.assertEqual(raised.exception.status_code, 503)
         answer_question.assert_not_called()
+
+    def test_chat_returns_safe_service_error_when_rag_fails(self):
+        conversation_id = "507f1f77bcf86cd799439011"
+        cursor = Mock()
+        cursor.sort.return_value.limit.return_value = []
+        with (
+            patch.object(chat_route, "get_model_warmup_error", return_value=None),
+            patch.object(chat_route.conversations_collection, "find_one", return_value={"user_id": "test-user"}),
+            patch.object(chat_route.messages_collection, "find", return_value=cursor),
+            patch.object(chat_route.messages_collection, "insert_one"),
+            patch.object(chat_route, "answer_question", side_effect=RuntimeError("private backend detail")),
+        ):
+            with self.assertRaises(HTTPException) as raised:
+                chat_route.chat(
+                    ChatRequest(
+                        question="Summarize my sources",
+                        conversation_id=conversation_id,
+                    ),
+                    current_user={"_id": "test-user"},
+                )
+
+        self.assertEqual(raised.exception.status_code, 503)
+        self.assertNotIn("private backend detail", raised.exception.detail)
 
 
 if __name__ == "__main__":

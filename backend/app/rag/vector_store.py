@@ -1,4 +1,5 @@
 import logging
+import math
 import os
 import time
 from functools import lru_cache
@@ -17,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 COLLECTION_NAME = "research_chunks"
 EMBEDDING_BATCH_SIZE = 8
+DEFAULT_LEXICAL_CHUNK_LIMIT = 500
 
 
 def _create_query_embedding(query: str) -> list[float]:
@@ -190,6 +192,7 @@ def get_all_user_chunks(
     user_id: str,
     file_type: str | None = None,
     source_filters: list[dict] | None = None,
+    limit: int | None = None,
 ):
     """
     Get stored chunks belonging to the current user, optionally restricted
@@ -238,13 +241,14 @@ def get_all_user_chunks(
             "$and": where_conditions
         }
 
-    return collection.get(
-        where=where,
-        include=[
-            "documents",
-            "metadatas",
-        ],
-    )
+    get_options = {
+        "where": where,
+        "include": ["documents", "metadatas"],
+    }
+    if limit is not None:
+        get_options["limit"] = max(1, int(limit))
+
+    return collection.get(**get_options)
 
 
 def delete_source(
@@ -316,7 +320,7 @@ def search_semantic_by_sources(
     source_filters: list[dict],
     limit: int | None = 30,
 ):
-    """Search each explicitly named source independently with one query embedding."""
+    """Search allowed sources with one embedding and a shared finite result budget."""
     if not source_filters:
         return {
             "ids": [],
@@ -334,26 +338,32 @@ def search_semantic_by_sources(
         "distances": [],
     }
     seen_ids = set()
-    for source_filter in source_filters:
+    remaining_limit = limit
+    for source_index, source_filter in enumerate(source_filters):
+        if remaining_limit is not None and remaining_limit <= 0:
+            break
         where = {
             "$and": [
                 {"user_id": user_id},
                 source_filter,
             ]
         }
-        count_started_at = time.perf_counter()
-        source_count = len(collection.get(where=where, include=[]).get("ids", []))
-        logger.info(
-            "Chroma source chunk count completed: elapsed_seconds=%.3f",
-            time.perf_counter() - count_started_at,
-        )
-        if source_count == 0:
-            continue
-        per_source_limit = (
-            source_count
-            if limit is None
-            else min(limit, source_count)
-        )
+        if remaining_limit is None:
+            count_started_at = time.perf_counter()
+            source_count = len(collection.get(where=where, include=[]).get("ids", []))
+            logger.info(
+                "Chroma source chunk count completed: elapsed_seconds=%.3f",
+                time.perf_counter() - count_started_at,
+            )
+            if source_count == 0:
+                continue
+            per_source_limit = source_count
+        else:
+            sources_left = len(source_filters) - source_index
+            per_source_limit = max(
+                1,
+                math.ceil(remaining_limit / sources_left),
+            )
         query_started_at = time.perf_counter()
         result = collection.query(
             query_embeddings=[query_embedding],
@@ -391,5 +401,7 @@ def search_semantic_by_sources(
                     combined[key].append(
                         values[index]
                     )
+        if remaining_limit is not None:
+            remaining_limit -= len(rows["ids"])
 
     return combined

@@ -12,6 +12,7 @@ from app.database.mongodb import documents_collection
 from app.core.model_cache import synchronized_lru_cache
 from app.documents.document_service import classify_document
 from app.rag.vector_store import (
+    DEFAULT_LEXICAL_CHUNK_LIMIT,
     get_all_user_chunks,
     search_semantic,
     search_semantic_by_sources,
@@ -21,10 +22,50 @@ from app.rag.vector_store import (
 logger = logging.getLogger(__name__)
 RERANK_CANDIDATES_PER_SOURCE = 12
 RERANK_BATCH_SIZE = 8
+DEFAULT_SEMANTIC_CANDIDATE_LIMIT = 80
+MAX_SEMANTIC_CANDIDATE_LIMIT = 256
+MAX_LEXICAL_CHUNK_LIMIT = 5000
+DEFAULT_RERANK_MAX_CANDIDATES = 48
+MAX_RERANK_MAX_CANDIDATES = 128
+
+
+def _bounded_setting(name: str, default: int, maximum: int) -> int:
+    """Read a positive integer setting while keeping request work bounded."""
+    try:
+        value = int(os.getenv(name, str(default)).strip())
+    except (TypeError, ValueError):
+        logger.warning("Invalid %s; using the default value", name)
+        value = default
+    return min(max(value, 1), maximum)
+
+
+def semantic_candidate_limit() -> int:
+    return _bounded_setting(
+        "RAG_SEMANTIC_CANDIDATE_LIMIT",
+        DEFAULT_SEMANTIC_CANDIDATE_LIMIT,
+        MAX_SEMANTIC_CANDIDATE_LIMIT,
+    )
+
+
+def rerank_candidate_limit() -> int:
+    return _bounded_setting(
+        "RAG_RERANK_MAX_CANDIDATES",
+        DEFAULT_RERANK_MAX_CANDIDATES,
+        MAX_RERANK_MAX_CANDIDATES,
+    )
+
+
+def lexical_chunk_limit() -> int:
+    return _bounded_setting(
+        "RAG_LEXICAL_CHUNK_LIMIT",
+        DEFAULT_LEXICAL_CHUNK_LIMIT,
+        MAX_LEXICAL_CHUNK_LIMIT,
+    )
 
 
 def reranking_enabled() -> bool:
-    return os.getenv("RAG_RERANKER_ENABLED", "true").strip().lower() in {
+    default = "false" if os.getenv("RENDER", "").strip().lower() == "true" else "true"
+    return os.getenv("RAG_RERANKER_ENABLED", default).strip().lower() in {
         "1", "true", "yes", "on",
     }
 
@@ -1798,7 +1839,10 @@ def rerank_candidates(
                 else 1.0 / (1.0 + math.exp(-max(-60.0, min(60.0, raw_score))))
             )
     except Exception as error:
-        print(f"Reranker warning: {error}")
+        logger.warning(
+            "RAG reranking unavailable; using semantic and lexical scores: error_type=%s",
+            type(error).__name__,
+        )
     finally:
         logger.info(
             "RAG reranking completed: candidates=%d elapsed_seconds=%.3f",
@@ -1818,6 +1862,7 @@ def rerank_candidates(
 def select_rerank_candidates(
     candidates: list[dict],
     per_source_limit: int = RERANK_CANDIDATES_PER_SOURCE,
+    total_limit: int | None = None,
 ) -> list[dict]:
     """Keep strong semantic candidates from every source before cross-encoding."""
     if not candidates:
@@ -1837,6 +1882,19 @@ def select_rerank_candidates(
             reverse=True,
         )
         selected.extend(ranked[:per_source_limit])
+    total_limit = (
+        rerank_candidate_limit()
+        if total_limit is None
+        else max(1, int(total_limit))
+    )
+    selected.sort(
+        key=lambda candidate: (
+            float(candidate.get("semantic_score", 0.0) or 0.0),
+            float(candidate.get("lexical_score", 0.0) or 0.0),
+        ),
+        reverse=True,
+    )
+    selected = selected[:total_limit]
     logger.info(
         "RAG rerank candidate selection: input_chunks=%d deduplicated_chunks=%d "
         "selected_chunks=%d source_count=%d elapsed_seconds=%.3f",
@@ -2591,7 +2649,7 @@ def hybrid_retrieve(
 
     definition_topic = extract_definition_topic(query)
     requested_file_type = file_type or detect_requested_file_type(query)
-    candidate_limit = None
+    candidate_limit = semantic_candidate_limit()
     resume_query = is_resume_content_query(query)
     resume_metadata = []
     explicit_document_reference = bool(
@@ -2721,11 +2779,13 @@ def hybrid_retrieve(
                 user_id=user_id,
                 file_type=requested_file_type,
                 source_filters=source_filters,
+                limit=lexical_chunk_limit(),
             )
         else:
             lexical_chunks = get_all_user_chunks(
                 user_id=user_id,
                 file_type=requested_file_type,
+                limit=lexical_chunk_limit(),
             )
         logger.info(
             "RAG lexical index loaded: restricted=%s chunks=%d elapsed_seconds=%.3f",

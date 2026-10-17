@@ -180,18 +180,16 @@ def chat(
         )
 
     except Exception as error:
-        logger.exception(
-            "Chat request failed after %.3f seconds",
+        logger.error(
+            "Chat request failed: error_type=%s elapsed_seconds=%.3f",
+            type(error).__name__,
             time.perf_counter() - request_started_at,
         )
 
         raise HTTPException(
-            status_code=500,
-            detail=(
-                f"RAG processing failed: "
-                f"{error}"
-            ),
-        )
+            status_code=503,
+            detail="Research could not be completed because a backend service is unavailable. Please retry shortly.",
+        ) from error
 
     messages_collection.insert_one(
         {
