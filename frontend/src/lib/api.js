@@ -159,7 +159,7 @@ export async function apiRequest(
             ? window.location.origin
             : "the current frontend origin";
         throw new Error(
-          `Unable to reach the API at ${API_BASE_URL}. Check that the backend is running and allows ${frontendOrigin} through CORS.`
+          `The browser could not read a response from the API at ${API_BASE_URL}. Check the network and confirm that the backend allows ${frontendOrigin} through CORS.`
         );
       }
       throw error;
@@ -213,7 +213,7 @@ export async function apiRequest(
 }
 
 export async function getDocuments() {
-  return apiRequest("/documents/");
+  return apiRequest("/documents/", { timeoutMs: 90_000 });
 }
 
 export async function uploadDocuments(files) {

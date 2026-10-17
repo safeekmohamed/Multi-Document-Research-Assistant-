@@ -56,14 +56,17 @@ from app.llm.llm_model import llm_configuration_warning
 from app.rag.model_runtime import warmup_rag_models
 
 logger = logging.getLogger(__name__)
+PRODUCTION_FRONTEND_ORIGIN = "https://multi-document-research-assistant.vercel.app"
 
 
 def configured_frontend_origins(frontend_origin: str) -> list[str]:
     origin = frontend_origin.rstrip("/")
+    origins = [PRODUCTION_FRONTEND_ORIGIN]
     if not origin:
-        return []
+        return origins
 
-    origins = [origin]
+    if origin not in origins:
+        origins.append(origin)
     parsed_origin = urlsplit(origin)
     hostname = (parsed_origin.hostname or "").lower()
     if hostname not in {"localhost", "127.0.0.1"}:

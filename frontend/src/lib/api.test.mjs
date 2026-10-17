@@ -200,6 +200,37 @@ test("fetch TypeError reports network and CORS failures", async () => {
   await assert.rejects(getDocumentFile("document-id"), /backend connection and CORS settings/i);
 });
 
+test("API fetch rejection identifies browser network or CORS response blocking", async () => {
+  saveToken("valid-session-token");
+  globalThis.fetch = async () => {
+    throw new TypeError("Failed to fetch");
+  };
+
+  await assert.rejects(
+    apiRequest("/documents/"),
+    /browser could not read a response.*allows http:\/\/localhost:3000 through CORS/i,
+  );
+});
+
+test("HTTP errors retain backend status details instead of becoming network errors", async () => {
+  saveToken("valid-session-token");
+  globalThis.fetch = async () => ({
+    ok: false,
+    status: 503,
+    headers: new Headers({ "content-type": "application/json" }),
+    json: async () => ({ detail: "Document listing is temporarily unavailable." }),
+  });
+
+  await assert.rejects(
+    apiRequest("/documents/"),
+    (error) => {
+      assert.equal(error.message, "Document listing is temporarily unavailable.");
+      assert.doesNotMatch(error.message, /could not read a response|CORS/i);
+      return true;
+    },
+  );
+});
+
 test("401 document response clears expired session without redirecting", async () => {
   saveToken("expired-session-token");
   globalThis.fetch = async () => ({ ok: false, status: 401, json: async () => ({ detail: "Invalid or expired token" }) });
@@ -252,6 +283,14 @@ test("document upload always clears its loading state after success or failure",
   assert.match(
     documentsPageSource,
     /async function handleFilesSelected\([\s\S]*?finally\s*\{\s*setLoading\(false\);\s*\}/,
+  );
+});
+
+test("document listing request has a timeout and always clears its loading state", () => {
+  assert.match(apiSource, /export async function getDocuments\(\)\s*\{\s*return apiRequest\("\/documents\/", \{ timeoutMs: 90_000 \}\);/);
+  assert.match(
+    documentsPageSource,
+    /async function loadAllSources\(\)[\s\S]*?finally\s*\{\s*setListLoading\(false\);\s*\}/,
   );
 });
 

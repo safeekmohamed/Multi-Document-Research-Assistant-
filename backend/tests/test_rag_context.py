@@ -386,17 +386,25 @@ class RetrievalCoverageTests(unittest.TestCase):
 
 
 class RetrievalBehaviorTests(unittest.TestCase):
-    def test_cors_allows_only_configured_frontend_and_loopback_alias(self):
+    def test_cors_allows_production_frontend_and_configured_loopback_alias(self):
         self.assertEqual(
             configured_frontend_origins("http://localhost:3000"),
             [
+                "https://multi-document-research-assistant.vercel.app",
                 "http://localhost:3000",
                 "http://127.0.0.1:3000",
             ],
         )
         self.assertEqual(
             configured_frontend_origins("https://research.example"),
-            ["https://research.example"],
+            [
+                "https://multi-document-research-assistant.vercel.app",
+                "https://research.example",
+            ],
+        )
+        self.assertEqual(
+            configured_frontend_origins(""),
+            ["https://multi-document-research-assistant.vercel.app"],
         )
 
     def test_resume_comparison_phrasings_enter_resume_retrieval(self):
