@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, test } from "node:test";
 
 const apiSource = readFileSync(new URL("./api.js", import.meta.url), "utf8");
+const documentsPageSource = readFileSync(new URL("../app/documents/page.js", import.meta.url), "utf8");
 const authSource = readFileSync(new URL("./auth.js", import.meta.url), "utf8");
 const authModuleUrl = `data:text/javascript;base64,${Buffer.from(authSource).toString("base64")}`;
 const testableApiSource = apiSource.replace(
@@ -228,4 +229,48 @@ test("login 401 keeps the API detail instead of treating bad credentials as an e
 
   await assert.rejects(apiRequest("/auth/login", { method: "POST" }), /Invalid email or password/);
   assert.equal(window.location.href, "/dashboard");
+});
+
+test("upload request timeout aborts fetch and returns a clear retry-safe message", async () => {
+  saveToken("valid-session-token");
+  let receivedSignal;
+  globalThis.fetch = (_url, options) => {
+    receivedSignal = options.signal;
+    return new Promise((_resolve, reject) => {
+      options.signal.addEventListener("abort", () => reject(options.signal.reason), { once: true });
+    });
+  };
+
+  await assert.rejects(
+    apiRequest("/documents/upload", { method: "POST", timeoutMs: 10 }),
+    /timed out after 1 seconds.*check the result before retrying/i,
+  );
+  assert.equal(receivedSignal.aborted, true);
+});
+
+test("document upload always clears its loading state after success or failure", () => {
+  assert.match(
+    documentsPageSource,
+    /async function handleFilesSelected\([\s\S]*?finally\s*\{\s*setLoading\(false\);\s*\}/,
+  );
+});
+
+test("upload reports a Render 5xx page without exposing raw HTML", async () => {
+  saveToken("valid-session-token");
+  globalThis.fetch = async () => ({
+    ok: false,
+    status: 502,
+    headers: new Headers({ "content-type": "text/html" }),
+    text: async () => "<html>proxy failure details</html>",
+  });
+
+  await assert.rejects(
+    apiRequest("/documents/upload", { method: "POST" }),
+    (error) => {
+      assert.match(error.message, /backend could not finish this upload \(HTTP 502\)/i);
+      assert.match(error.message, /check the Documents page before retrying/i);
+      assert.doesNotMatch(error.message, /proxy failure details|<html>/i);
+      return true;
+    },
+  );
 });

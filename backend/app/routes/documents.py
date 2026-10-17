@@ -5,17 +5,24 @@ from fastapi import (
     HTTPException,
     UploadFile,
 )
+from fastapi.routing import APIRoute
 from fastapi.responses import StreamingResponse
 from starlette.background import BackgroundTask
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.responses import JSONResponse
 
 from bson import ObjectId
 from urllib.parse import quote, urlsplit
+import logging
+import threading
 import time
 from io import BytesIO
 import tempfile
+from pathlib import Path
 import requests
 import cloudinary.utils
 from openpyxl import load_workbook
+from starlette.concurrency import run_in_threadpool
 
 from app.auth.jwt import get_current_user
 from app.database.mongodb import (
@@ -28,12 +35,105 @@ from app.documents.document_service import (
 )
 
 
+MAX_VIEW_SIZE = 50 * 1024 * 1024
+MAX_UPLOAD_FILES = 10
+MAX_UPLOAD_FILE_SIZE = 20 * 1024 * 1024
+MAX_UPLOAD_REQUEST_SIZE = 50 * 1024 * 1024
+UPLOAD_COPY_CHUNK_SIZE = 1024 * 1024
+logger = logging.getLogger(__name__)
+_UPLOAD_PROCESS_LOCK = threading.Lock()
+
+
+def _process_document_serially(**kwargs):
+    with _UPLOAD_PROCESS_LOCK:
+        return process_uploaded_document(**kwargs)
+
+
+class BoundedUploadRoute(APIRoute):
+    def get_route_handler(self):
+        route_handler = super().get_route_handler()
+
+        async def handle_request(request):
+            if self.name == "upload_documents" and request.method == "POST":
+                content_length = request.headers.get("content-length", "")
+                if content_length.isdigit() and int(content_length) > MAX_UPLOAD_REQUEST_SIZE + 1024 * 1024:
+                    return JSONResponse(
+                        status_code=413,
+                        content={"detail": "The combined upload must be 50 MB or smaller."},
+                    )
+                try:
+                    await request.form(
+                        max_files=MAX_UPLOAD_FILES,
+                        max_fields=MAX_UPLOAD_FILES,
+                    )
+                except StarletteHTTPException as error:
+                    if "too many files" not in str(error.detail).lower():
+                        raise
+                    return JSONResponse(
+                        status_code=413,
+                        content={"detail": f"Upload no more than {MAX_UPLOAD_FILES} files at once."},
+                    )
+            return await route_handler(request)
+
+        return handle_request
+
+
 router = APIRouter(
     prefix="/documents",
     tags=["Documents"],
+    route_class=BoundedUploadRoute,
 )
 
-MAX_VIEW_SIZE = 50 * 1024 * 1024
+
+def _get_upload_size(file: UploadFile) -> int:
+    if file.size is not None:
+        return int(file.size)
+    current_position = file.file.tell()
+    file.file.seek(0, 2)
+    size = file.file.tell()
+    file.file.seek(current_position)
+    return size
+
+
+async def _stage_upload(file: UploadFile) -> tuple[Path, int]:
+    suffix = Path(file.filename or "document").suffix.lower()
+    staged_file = tempfile.NamedTemporaryFile(
+        mode="wb",
+        suffix=suffix,
+        delete=False,
+    )
+    staged_path = Path(staged_file.name)
+    size = 0
+    started_at = time.perf_counter()
+    try:
+        await file.seek(0)
+        while True:
+            block = await file.read(UPLOAD_COPY_CHUNK_SIZE)
+            if not block:
+                break
+            size += len(block)
+            if size > MAX_UPLOAD_FILE_SIZE:
+                raise HTTPException(
+                    status_code=413,
+                    detail="Each uploaded file must be 20 MB or smaller.",
+                )
+            staged_file.write(block)
+        if size == 0:
+            raise HTTPException(
+                status_code=400,
+                detail="Uploaded file is empty",
+            )
+        staged_file.close()
+        logger.info(
+            "Upload staging completed: bytes=%d elapsed_seconds=%.3f",
+            size,
+            time.perf_counter() - started_at,
+        )
+        return staged_path, size
+    except Exception:
+        staged_file.close()
+        staged_path.unlink(missing_ok=True)
+        raise
 
 
 def _owned_file_document(document_id: str, current_user: dict):
@@ -119,48 +219,91 @@ async def upload_documents(
             detail="No files were uploaded",
         )
 
-    results = []
+    staged_paths = []
+    processing_stage = "validation"
+    try:
+        if len(files) > MAX_UPLOAD_FILES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"Upload no more than {MAX_UPLOAD_FILES} files at once.",
+            )
 
-    for file in files:
-        filename = (
-            file.filename
-            or "document"
+        declared_sizes = [_get_upload_size(file) for file in files]
+        if any(size > MAX_UPLOAD_FILE_SIZE for size in declared_sizes):
+            raise HTTPException(
+                status_code=413,
+                detail="Each uploaded file must be 20 MB or smaller.",
+            )
+        if sum(declared_sizes) > MAX_UPLOAD_REQUEST_SIZE:
+            raise HTTPException(
+                status_code=413,
+                detail="The combined upload must be 50 MB or smaller.",
+            )
+
+        logger.info(
+            "Document upload accepted: file_count=%d total_bytes=%d",
+            len(files),
+            sum(declared_sizes),
         )
+        results = []
+        actual_total_size = 0
+        for file in files:
+            filename = file.filename or "document"
+            processing_stage = "staging"
+            staged_path, actual_size = await _stage_upload(file)
+            staged_paths.append(staged_path)
+            await file.close()
+            actual_total_size += actual_size
+            if actual_total_size > MAX_UPLOAD_REQUEST_SIZE:
+                raise HTTPException(
+                    status_code=413,
+                    detail="The combined upload must be 50 MB or smaller.",
+                )
 
-        try:
-            content = await file.read()
+            try:
+                processing_stage = "document_processing"
+                processing_started_at = time.perf_counter()
+                result = await run_in_threadpool(
+                    _process_document_serially,
+                    user_id=str(current_user["_id"]),
+                    filename=filename,
+                    file_path=staged_path,
+                )
+                results.append(result)
+                logger.info(
+                    "Document upload completed: bytes=%d chunks=%d elapsed_seconds=%.3f",
+                    actual_size,
+                    int(result.get("chunk_count", 0)),
+                    time.perf_counter() - processing_started_at,
+                )
+            except ValueError as error:
+                raise HTTPException(
+                    status_code=400,
+                    detail=str(error),
+                ) from error
+            except Exception as error:
+                logger.error(
+                    "Document upload failed: stage=%s error_type=%s",
+                    processing_stage,
+                    type(error).__name__,
+                )
+                raise HTTPException(
+                    status_code=500,
+                    detail="Document processing failed. Try a smaller supported file or retry later.",
+                ) from error
+            finally:
+                staged_path.unlink(missing_ok=True)
+                staged_paths.remove(staged_path)
 
-            result = process_uploaded_document(
-                user_id=str(
-                    current_user["_id"]
-                ),
-                filename=filename,
-                content=content,
-            )
-
-            results.append(result)
-
-        except ValueError as error:
-            raise HTTPException(
-                status_code=400,
-                detail=str(error),
-            )
-
-        except Exception as error:
-            raise HTTPException(
-                status_code=500,
-                detail=(
-                    f"Document processing failed: "
-                    f"{error}"
-                ),
-            )
-
-    return {
-        "message": (
-            "Documents processed successfully"
-        ),
-        "documents": results,
-    }
+        return {
+            "message": "Documents processed successfully",
+            "documents": results,
+        }
+    finally:
+        for staged_path in staged_paths:
+            staged_path.unlink(missing_ok=True)
+        for file in files:
+            await file.close()
 
 
 @router.get("/")

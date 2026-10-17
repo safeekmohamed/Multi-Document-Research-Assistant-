@@ -1,6 +1,9 @@
 ﻿import os
 import re
+import logging
 import tempfile
+import time
+import zipfile
 
 from datetime import datetime, timezone
 from pathlib import Path
@@ -39,6 +42,32 @@ ALLOWED_EXTENSIONS = {
 }
 
 CLOUDINARY_FOLDER = "multi-document-research"
+logger = logging.getLogger(__name__)
+MAX_DOCUMENT_TEXT_CHARACTERS = 5_000_000
+MAX_DOCUMENT_CHUNKS = 5_000
+MAX_OFFICE_ARCHIVE_EXPANDED_BYTES = 32 * 1024 * 1024
+MAX_OFFICE_ARCHIVE_ENTRIES = 10_000
+
+
+def validate_office_archive_size(file_path: str | Path, extension: str) -> None:
+    if extension not in {".docx", ".xlsx", ".pptx"}:
+        return
+
+    try:
+        with zipfile.ZipFile(file_path) as archive:
+            entries = archive.infolist()
+            expanded_size = sum(entry.file_size for entry in entries)
+    except zipfile.BadZipFile as error:
+        raise ValueError("The uploaded Office document is not a valid archive") from error
+
+    if len(entries) > MAX_OFFICE_ARCHIVE_ENTRIES:
+        raise ValueError(
+            "The document contains too many embedded parts to process safely"
+        )
+    if expanded_size > MAX_OFFICE_ARCHIVE_EXPANDED_BYTES:
+        raise ValueError(
+            "The expanded Office document exceeds the 32 MB processing limit"
+        )
 
 
 # =========================================================
@@ -649,7 +678,9 @@ def classify_document(
 def process_uploaded_document(
     user_id: str,
     filename: str,
-    content: bytes,
+    content: bytes | None = None,
+    *,
+    file_path: str | Path | None = None,
 ):
     """
     Upload, extract, classify, chunk, embed and store
@@ -665,7 +696,12 @@ def process_uploaded_document(
             "Only PDF, DOCX, TXT, CSV, XLSX and PPTX files are supported"
         )
 
-    if not content:
+    if file_path is None and not content:
+        raise ValueError(
+            "Uploaded file is empty"
+        )
+
+    if file_path is not None and not Path(file_path).is_file():
         raise ValueError(
             "Uploaded file is empty"
         )
@@ -674,8 +710,14 @@ def process_uploaded_document(
 
     cloudinary_result = None
     vector_ids = []
+    processing_stage = "cloudinary_upload"
 
     try:
+
+        if file_path is not None:
+            processing_stage = "document_validation"
+            validate_office_archive_size(file_path, extension)
+            processing_stage = "cloudinary_upload"
 
         # =================================================
         # 1. Upload original file to Cloudinary
@@ -685,9 +727,11 @@ def process_uploaded_document(
             filename
         ).name
 
+        stage_started_at = time.perf_counter()
+        logger.info("Document processing stage started: stage=%s", processing_stage)
         cloudinary_result = (
             cloudinary.uploader.upload(
-                content,
+                str(file_path) if file_path is not None else content,
                 resource_type="raw",
                 type="upload",
                 folder=CLOUDINARY_FOLDER,
@@ -695,6 +739,11 @@ def process_uploaded_document(
                 public_id=original_filename,
                 overwrite=False,
             )
+        )
+        logger.info(
+            "Document processing stage completed: stage=%s elapsed_seconds=%.3f",
+            processing_stage,
+            time.perf_counter() - stage_started_at,
         )
 
         cloudinary_url = (
@@ -719,34 +768,48 @@ def process_uploaded_document(
         # 2. Create temporary local file
         # =================================================
 
-        temporary_path = None
+        temporary_path = Path(file_path) if file_path is not None else None
+        owns_temporary_path = temporary_path is None
 
         try:
-
-            with tempfile.NamedTemporaryFile(
-                suffix=extension,
-                delete=False,
-            ) as temporary_file:
-
-                temporary_file.write(
-                    content
-                )
-
-                temporary_path = Path(
-                    temporary_file.name
-                )
+            if temporary_path is None:
+                with tempfile.NamedTemporaryFile(
+                    suffix=extension,
+                    delete=False,
+                ) as temporary_file:
+                    temporary_file.write(content)
+                    temporary_path = Path(temporary_file.name)
 
             # =================================================
             # 3. Extract document text
             # =================================================
 
+            processing_stage = "document_extraction"
+            stage_started_at = time.perf_counter()
+            logger.info("Document processing stage started: stage=%s", processing_stage)
+            if file_path is None:
+                validate_office_archive_size(temporary_path, extension)
             pages = load_document(
                 str(temporary_path)
+            )
+            logger.info(
+                "Document processing stage completed: stage=%s page_count=%d elapsed_seconds=%.3f",
+                processing_stage,
+                len(pages),
+                time.perf_counter() - stage_started_at,
             )
 
             if not pages:
                 raise ValueError(
                     "No readable text was found in the document"
+                )
+
+            if (
+                sum(len(page.get("text") or "") for page in pages)
+                > MAX_DOCUMENT_TEXT_CHARACTERS
+            ):
+                raise ValueError(
+                    "The extracted document text exceeds the 5 million character processing limit"
                 )
 
             # =================================================
@@ -760,17 +823,6 @@ def process_uploaded_document(
                 )
             )
 
-            print(
-                "Document classification:",
-                {
-                    "filename": filename,
-                    "document_type": document_type,
-                    "confidence": (
-                        document_type_confidence
-                    ),
-                },
-            )
-
             # =================================================
             # 5. Split document into hierarchy-aware chunks
             # =================================================
@@ -782,6 +834,11 @@ def process_uploaded_document(
             if not chunks:
                 raise ValueError(
                     "No readable text was found in the document"
+                )
+
+            if len(chunks) > MAX_DOCUMENT_CHUNKS:
+                raise ValueError(
+                    "The document exceeds the 5,000 chunk processing limit"
                 )
 
             texts = [
@@ -874,16 +931,31 @@ def process_uploaded_document(
             # 7. Store chunks and embeddings
             # =================================================
 
+            processing_stage = "embedding_and_vector_storage"
+            stage_started_at = time.perf_counter()
+            logger.info(
+                "Document processing stage started: stage=%s chunks=%d",
+                processing_stage,
+                len(texts),
+            )
             vector_ids = add_chunks(
                 user_id=user_id,
                 chunks=texts,
                 metadatas=metadatas,
             )
+            logger.info(
+                "Document processing stage completed: stage=%s chunks=%d elapsed_seconds=%.3f",
+                processing_stage,
+                len(vector_ids),
+                time.perf_counter() - stage_started_at,
+            )
+            del pages, chunks, texts, metadatas
 
         finally:
 
             if (
-                temporary_path
+                owns_temporary_path
+                and temporary_path is not None
                 and temporary_path.exists()
             ):
                 temporary_path.unlink()
@@ -918,8 +990,15 @@ def process_uploaded_document(
             ),
         }
 
+        processing_stage = "metadata_storage"
+        stage_started_at = time.perf_counter()
         result = documents_collection.insert_one(
             document
+        )
+        logger.info(
+            "Document processing stage completed: stage=%s elapsed_seconds=%.3f",
+            processing_stage,
+            time.perf_counter() - stage_started_at,
         )
 
         return {
@@ -948,7 +1027,12 @@ def process_uploaded_document(
             ),
         }
 
-    except Exception:
+    except Exception as error:
+        logger.error(
+            "Document processing failed: stage=%s error_type=%s",
+            processing_stage,
+            type(error).__name__,
+        )
 
         # =================================================
         # Rollback vector data
@@ -967,9 +1051,9 @@ def process_uploaded_document(
 
             except Exception as cleanup_error:
 
-                print(
-                    "Vector cleanup warning:",
-                    cleanup_error,
+                logger.warning(
+                    "Vector cleanup failed: error_type=%s",
+                    type(cleanup_error).__name__,
                 )
 
         # =================================================
@@ -995,9 +1079,9 @@ def process_uploaded_document(
 
             except Exception as cleanup_error:
 
-                print(
-                    "Cloudinary cleanup warning:",
-                    cleanup_error,
+                logger.warning(
+                    "Cloudinary cleanup failed: error_type=%s",
+                    type(cleanup_error).__name__,
                 )
 
         raise

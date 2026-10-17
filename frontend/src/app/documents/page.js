@@ -120,6 +120,7 @@ async function handleFilesSelected(files) {
         {
           method: "POST",
           body: formData,
+          timeoutMs: 5 * 60 * 1000,
         }
       );
 
@@ -139,7 +140,7 @@ async function handleFilesSelected(files) {
         setNotice("");
       }, 3500);
     } catch (error) {
-      console.error(error);
+      console.error("Document upload failed.", error?.name || "Error");
 
       setError(
         error.message ||

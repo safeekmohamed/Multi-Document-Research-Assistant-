@@ -5,13 +5,19 @@ from docx import Document as DocxDocument
 from pptx import Presentation
 from pypdf import PdfReader
 
+MAX_PDF_PAGES = 5_000
+MAX_PDF_TEXT_CHARACTERS = 5_000_000
+
 
 def extract_pdf(
     file_path: str,
 ) -> list[dict]:
     reader = PdfReader(file_path)
+    if len(reader.pages) > MAX_PDF_PAGES:
+        raise ValueError("The PDF exceeds the 5,000 page processing limit")
 
     pages = []
+    extracted_characters = 0
 
     for page_number, page in enumerate(
         reader.pages,
@@ -23,6 +29,12 @@ def extract_pdf(
 
         if not text:
             continue
+
+        extracted_characters += len(text)
+        if extracted_characters > MAX_PDF_TEXT_CHARACTERS:
+            raise ValueError(
+                "The extracted document text exceeds the 5 million character processing limit"
+            )
 
         pages.append(
             {

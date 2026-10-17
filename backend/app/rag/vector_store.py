@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 COLLECTION_NAME = "research_chunks"
+EMBEDDING_BATCH_SIZE = 8
 
 
 def _create_query_embedding(query: str) -> list[float]:
@@ -68,32 +69,42 @@ def add_chunks(
 
     collection = get_chroma_collection()
 
-    embeddings = create_embeddings(
-        chunks
-    )
-
     ids = [
         str(uuid4())
         for _ in chunks
     ]
 
-    final_metadatas = []
-
-    for metadata in metadatas:
-
-        final_metadatas.append(
-            {
-                "user_id": user_id,
-                **metadata,
-            }
-        )
-
-    collection.add(
-        ids=ids,
-        documents=chunks,
-        embeddings=embeddings,
-        metadatas=final_metadatas,
-    )
+    added_ids = []
+    try:
+        for start in range(0, len(chunks), EMBEDDING_BATCH_SIZE):
+            end = start + EMBEDDING_BATCH_SIZE
+            batch_chunks = chunks[start:end]
+            batch_ids = ids[start:end]
+            batch_metadatas = [
+                {"user_id": user_id, **metadata}
+                for metadata in metadatas[start:end]
+            ]
+            batch_embeddings = create_embeddings(
+                batch_chunks,
+                batch_size=EMBEDDING_BATCH_SIZE,
+            )
+            # Track IDs before adding so a failed Chroma write can clean up
+            # any IDs from a partially completed batch as well.
+            added_ids.extend(batch_ids)
+            collection.add(
+                ids=batch_ids,
+                documents=batch_chunks,
+                embeddings=batch_embeddings,
+                metadatas=batch_metadatas,
+            )
+            del batch_embeddings
+    except Exception:
+        if added_ids:
+            try:
+                collection.delete(ids=added_ids)
+            except Exception:
+                logger.exception("Failed to roll back a partial chunk batch")
+        raise
 
     return ids
 

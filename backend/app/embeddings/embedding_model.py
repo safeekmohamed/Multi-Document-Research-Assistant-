@@ -42,6 +42,7 @@ def get_embedding_model():
 
 def create_embeddings(
     texts: list[str],
+    batch_size: int = 32,
 ) -> list[list[float]]:
 
     if not texts:
@@ -51,6 +52,7 @@ def create_embeddings(
 
     embeddings = model.encode(
         texts,
+        batch_size=batch_size,
         normalize_embeddings=True,
         convert_to_numpy=True,
         show_progress_bar=False,

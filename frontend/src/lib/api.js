@@ -112,60 +112,104 @@ export async function apiRequest(
     ...options.headers,
   };
 
+  const { timeoutMs, signal: callerSignal, ...requestOptions } = options;
+  const timeoutController = Number.isFinite(timeoutMs) && timeoutMs > 0
+    ? new AbortController()
+    : null;
+  let timeoutId;
+  let timedOut = false;
+  const forwardAbort = () => timeoutController?.abort(callerSignal?.reason);
+
+  if (timeoutController && callerSignal) {
+    if (callerSignal.aborted) {
+      forwardAbort();
+    } else {
+      callerSignal.addEventListener("abort", forwardAbort, { once: true });
+    }
+  }
+  if (timeoutController) {
+    timeoutId = setTimeout(() => {
+      timedOut = true;
+      timeoutController.abort();
+    }, timeoutMs);
+  }
+
   if (token) {
     headers.Authorization = `Bearer ${token}`;
   }
 
-  let response;
   try {
-    response = await authenticatedFetch(
-      `${API_BASE_URL}${endpoint}`,
-      { ...options, headers }
-    );
-  } catch (error) {
-    if (error instanceof TypeError) {
-      const frontendOrigin =
-        typeof window !== "undefined"
-          ? window.location.origin
-          : "the current frontend origin";
+    let response;
+    try {
+      response = await authenticatedFetch(
+        `${API_BASE_URL}${endpoint}`,
+        {
+          ...requestOptions,
+          headers,
+          signal: timeoutController?.signal || callerSignal,
+        }
+      );
+    } catch (error) {
+      if (timedOut) {
+        throw new Error(`Request timed out after ${Math.ceil(timeoutMs / 1000)} seconds. The server may still be processing it; check the result before retrying.`);
+      }
+      if (error instanceof TypeError) {
+        const frontendOrigin =
+          typeof window !== "undefined"
+            ? window.location.origin
+            : "the current frontend origin";
+        throw new Error(
+          `Unable to reach the API at ${API_BASE_URL}. Check that the backend is running and allows ${frontendOrigin} through CORS.`
+        );
+      }
+      throw error;
+    }
+
+    const contentType =
+      response.headers.get("content-type") || "";
+
+    const data =
+      contentType.includes("application/json")
+        ? await response.json()
+        : await response.text();
+
+    if (response.status === 401) {
+      const isPublicAuthEndpoint = endpoint.startsWith("/auth/");
+      if (!isPublicAuthEndpoint && typeof window !== "undefined") {
+        removeToken();
+        window.location.href = "/login";
+      }
+
       throw new Error(
-        `Unable to reach the API at ${API_BASE_URL}. Check that the backend is running and allows ${frontendOrigin} through CORS.`
+        isPublicAuthEndpoint
+          ? (typeof data === "object" ? data.detail || "Authentication failed." : data || "Authentication failed.")
+          : "Session expired. Please login again."
       );
     }
-    throw error;
-  }
 
-  const contentType =
-    response.headers.get("content-type") || "";
-
-  const data =
-    contentType.includes("application/json")
-      ? await response.json()
-      : await response.text();
-
-  if (response.status === 401) {
-    const isPublicAuthEndpoint = endpoint.startsWith("/auth/");
-    if (!isPublicAuthEndpoint && typeof window !== "undefined") {
-      removeToken();
-      window.location.href = "/login";
+    if (!response.ok) {
+      if (endpoint === "/documents/upload" && response.status >= 500) {
+        throw new Error(
+          `The backend could not finish this upload (HTTP ${response.status}). Check the Documents page before retrying; the service may have restarted during processing.`
+        );
+      }
+      throw new Error(
+        typeof data === "object"
+          ? data.detail || "Request failed"
+          : data || "Request failed"
+      );
     }
 
-    throw new Error(
-      isPublicAuthEndpoint
-        ? (typeof data === "object" ? data.detail || "Authentication failed." : data || "Authentication failed.")
-        : "Session expired. Please login again."
-    );
+    return data;
+  } catch (error) {
+    if (timedOut) {
+      throw new Error(`Request timed out after ${Math.ceil(timeoutMs / 1000)} seconds. The server may still be processing it; check the result before retrying.`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+    callerSignal?.removeEventListener("abort", forwardAbort);
   }
-
-  if (!response.ok) {
-    throw new Error(
-      typeof data === "object"
-        ? data.detail || "Request failed"
-        : data || "Request failed"
-    );
-  }
-
-  return data;
 }
 
 export async function getDocuments() {
