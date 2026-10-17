@@ -115,6 +115,8 @@ test("chat renders source metadata for new and saved messages without requiring 
   assert.match(chatSource, /No source metadata is available for this answer/);
   assert.match(chatSource, /<CitationCard/);
   assert.match(chatSource, /data\.sources \|\| data\.citations \|\| \[\]/);
+  assert.match(chatSource, /Research took longer than five minutes[\s\S]*?backend and AI provider are responsive/);
+  assert.match(chatSource, /finally \{[\s\S]*?clearTimeout\(timeoutId\)[\s\S]*?clearInterval\(elapsedIntervalId\)[\s\S]*?setLoading\(false\)/);
 
   const historySource = readFileSync(new URL("../app/history/page.js", import.meta.url), "utf8");
   assert.match(historySource, /message\.sources\.length > 0[\s\S]*?message\.citations/);

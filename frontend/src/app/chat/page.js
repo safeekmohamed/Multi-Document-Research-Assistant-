@@ -412,7 +412,7 @@ export default function ChatPage({ embedded = false }) {
 
       setError(
         (requestTimedOut
-          ? "Research took longer than five minutes, so this browser request was stopped. Check that the backend and Ollama model are responsive, then retry."
+          ? "Research took longer than five minutes, so this browser request was stopped. Check that the backend and AI provider are responsive, then retry."
           : requestError.message) ||
           "Something went wrong while generating the answer."
       );

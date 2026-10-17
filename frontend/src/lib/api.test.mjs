@@ -210,7 +210,7 @@ test("401 document response clears expired session without redirecting", async (
 test("document fetch distinguishes backend storage errors without redirecting to login", async () => {
   saveToken("valid-session-token");
   globalThis.fetch = async (url, options) => {
-    assert.equal(url, "http://127.0.0.1:8001/documents/view/doc%2Fid");
+    assert.equal(url, "http://127.0.0.1:8000/documents/view/doc%2Fid");
     assert.equal(options.headers.get("Authorization"), "Bearer valid-session-token");
     return { ok: false, status: 502, json: async () => ({ detail: "Unable to retrieve the stored document" }) };
   };

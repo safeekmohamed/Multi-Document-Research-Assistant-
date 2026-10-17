@@ -69,6 +69,95 @@ class SourceRestrictionTests(unittest.TestCase):
         semantic_search.assert_not_called()
         restricted_search.assert_not_called()
 
+    def test_natural_resume_questions_restrict_retrieval_to_owned_resume_sources(self):
+        resume = {
+            "source_id": "resume-source",
+            "filename": "safeekmohamedresume.pdf",
+            "document_type": "resume",
+            "source_type": "file",
+        }
+        documents = [self.documents[0], resume]
+        semantic = {
+            "ids": [["resume-1", "llm-1"]],
+            "documents": [["Resume employment history", "Unrelated LangGraph content"]],
+            "metadatas": [[
+                {
+                    "source_id": "resume-source",
+                    "filename": "safeekmohamedresume.pdf",
+                    "document_type": "resume",
+                    "source_type": "file",
+                    "page": 1,
+                },
+                {
+                    "source_id": "llm-source",
+                    "filename": "langgraph.pdf",
+                    "page": 1,
+                },
+            ]],
+            "distances": [[0.1, 0.2]],
+        }
+        lexical = {
+            "ids": ["resume-1", "llm-1"],
+            "documents": ["Resume employment history", "Unrelated LangGraph content"],
+            "metadatas": semantic["metadatas"][0],
+        }
+
+        for question in (
+            "Tell me about my resume",
+            "What's in my resume?",
+            "What does my resume say?",
+        ):
+            with self.subTest(question=question), ExitStack() as stack:
+                metadata_lookup = stack.enter_context(
+                    patch.object(retriever, "get_user_file_metadata", return_value=documents)
+                )
+                semantic_search = stack.enter_context(
+                    patch.object(retriever, "search_semantic_by_sources", return_value=semantic)
+                )
+                unrestricted_search = stack.enter_context(
+                    patch.object(retriever, "search_semantic")
+                )
+                stack.enter_context(
+                    patch.object(retriever, "get_all_user_chunks", return_value=lexical)
+                )
+                for mocked in self._identity_ranking_patches():
+                    stack.enter_context(mocked)
+
+                results = retriever.hybrid_retrieve(
+                    user_id="owner-a", query=question, limit=None
+                )
+
+            self.assertEqual(
+                [item["metadata"]["filename"] for item in results],
+                ["safeekmohamedresume.pdf"],
+            )
+            context = rag_service.build_context(results)
+            citations = rag_service.create_citations(results, context)
+            self.assertEqual(
+                [citation["filename"] for citation in citations],
+                ["safeekmohamedresume.pdf"],
+            )
+            self.assertEqual(citations[0]["pages"], [1])
+            self.assertIn("Resume employment history", context)
+            self.assertNotIn("Unrelated LangGraph content", context)
+            metadata_lookup.assert_called_with("owner-a")
+            self.assertEqual(
+                semantic_search.call_args.kwargs["user_id"], "owner-a"
+            )
+            self.assertEqual(
+                semantic_search.call_args.kwargs["source_filters"],
+                [{"source_id": "resume-source"}],
+            )
+            unrestricted_search.assert_not_called()
+
+    def test_resume_source_discovery_wording_stays_discovery(self):
+        self.assertTrue(
+            retriever.is_resume_discovery_query("Show resumes in my account")
+        )
+        self.assertFalse(
+            retriever.is_resume_content_query("Show resumes in my account")
+        )
+
     def test_attached_source_is_allowlisted_in_semantic_and_lexical_retrieval(self):
         attachment = {"source_id": "llm-source", "filename": "llm.pdf"}
         with ExitStack() as stack:

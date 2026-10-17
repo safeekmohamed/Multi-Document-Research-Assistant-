@@ -155,6 +155,16 @@ DOCUMENT_DISCOVERY_ACTIONS = {
 
 
 RESUME_CONTENT_TERMS = {
+    "about",
+    "tell",
+    "explain",
+    "review",
+    "say",
+    "says",
+    "mention",
+    "mentions",
+    "contain",
+    "contains",
     "skill",
     "skills",
     "experience",
@@ -229,6 +239,11 @@ RESUME_QUERY_INTENT_WORDS = {
     "which",
     "your",
 }
+
+
+RESUME_CONTENT_REFERENCE_PATTERN = re.compile(
+    r"\b(?:about|in|inside)\s+(?:(?:my|the|this|that|your)\s+)?(?:resume|cv)s?\b"
+)
 
 
 # ============================================================
@@ -877,6 +892,9 @@ def is_resume_discovery_query(
     ):
         return False
 
+    if RESUME_CONTENT_REFERENCE_PATTERN.search(normalized):
+        return False
+
     return bool(
         words.intersection(
             DOCUMENT_DISCOVERY_ACTIONS
@@ -939,6 +957,7 @@ def is_resume_content_query(
         or words.intersection(
             COMPARISON_WORDS
         )
+        or RESUME_CONTENT_REFERENCE_PATTERN.search(normalized)
         or "in which resume" in normalized
         or "which resume has" in normalized
         or "which resume contains" in normalized
@@ -1598,6 +1617,7 @@ def discover_resumes(
         for metadata in documents
         if get_document_type(metadata) in {"", "other"}
         and not is_resume_metadata(metadata)
+        and get_metadata_file_type(metadata) not in {"csv", "xlsx"}
         and str(metadata.get("source_type", "")).lower() != "url"
         and not metadata.get("source_url")
         and not metadata.get("url")

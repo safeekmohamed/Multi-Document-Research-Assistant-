@@ -469,6 +469,33 @@ class RetrievalBehaviorTests(unittest.TestCase):
         )
         classify.assert_called_once()
 
+    def test_legacy_spreadsheet_is_not_misclassified_as_resume(self):
+        documents = [{
+            "source_id": "employee-table",
+            "filename": "sample-employees.xlsx",
+            "file_type": "xlsx",
+            "document_type": "other",
+            "source_type": "file",
+        }]
+        indexed_chunks = {
+            "documents": ["Employee data with skills, education, and experience columns."],
+            "metadatas": [{
+                "source_id": "employee-table",
+                "filename": "sample-employees.xlsx",
+                "file_type": "xlsx",
+            }],
+        }
+
+        with (
+            patch.object(retriever, "get_user_file_metadata", return_value=documents),
+            patch.object(retriever, "get_all_user_chunks", return_value=indexed_chunks),
+            patch.object(retriever, "classify_document", return_value=("resume", 0.99)) as classify,
+        ):
+            resumes = retriever.discover_resumes("test-user")
+
+        self.assertEqual(resumes, [])
+        classify.assert_not_called()
+
     def test_resume_comparison_searches_only_resume_sources_without_chunk_type_tags(self):
         documents = [
             {
