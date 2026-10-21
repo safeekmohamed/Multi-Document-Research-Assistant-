@@ -1,10 +1,10 @@
+
 import os
 import logging
 import time
 
 from dotenv import load_dotenv
 from app.core.model_cache import synchronized_lru_cache
-
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -22,27 +22,39 @@ def get_embedding_model():
         )
 
     started_at = time.perf_counter()
-    logger.info("Loading embedding model: model=%s", model_name)
+
+    logger.info(
+        "Loading embedding model: model=%s",
+        model_name,
+    )
+
     try:
-        model = SentenceTransformer(model_name)
+        model = SentenceTransformer(
+            model_name,
+            device="cpu",
+        )
     except Exception:
         logger.exception(
-            "Embedding model initialization failed: model=%s elapsed_seconds=%.3f",
+            "Embedding model initialization failed: "
+            "model=%s elapsed_seconds=%.3f",
             model_name,
             time.perf_counter() - started_at,
         )
         raise
+
     logger.info(
-        "Embedding model initialized: model=%s elapsed_seconds=%.3f",
+        "Embedding model initialized: "
+        "model=%s elapsed_seconds=%.3f",
         model_name,
         time.perf_counter() - started_at,
     )
+
     return model
 
 
 def create_embeddings(
     texts: list[str],
-    batch_size: int = 32,
+    batch_size: int = 4,
 ) -> list[list[float]]:
 
     if not texts:
@@ -58,4 +70,8 @@ def create_embeddings(
         show_progress_bar=False,
     )
 
-    return embeddings.tolist()
+    result = embeddings.tolist()
+
+    del embeddings
+
+    return result
