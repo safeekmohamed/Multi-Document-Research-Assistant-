@@ -43,10 +43,6 @@ export default function HistoryPage() {
   const [search, setSearch] =
     useState("");
 
-useEffect(() => {
-    loadConversations();
-  }, []);
-
   async function loadConversations() {
     try {
       setLoading(true);
@@ -70,6 +66,11 @@ useEffect(() => {
       setLoading(false);
     }
   }
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => loadConversations(), 0);
+    return () => window.clearTimeout(timer);
+  }, []);
 
 async function openConversation(
     conversation

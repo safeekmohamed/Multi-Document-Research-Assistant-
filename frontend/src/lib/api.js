@@ -1,9 +1,20 @@
 import { getToken, removeToken } from "./auth.js";
 
-export const API_BASE_URL = (
-  process.env.NEXT_PUBLIC_API_BASE_URL ||
-  "http://127.0.0.1:8000"
-).replace(/\/$/, "");
+function getApiBaseUrl() {
+  const configuredUrl = process.env.NEXT_PUBLIC_API_BASE_URL;
+  if (configuredUrl) return configuredUrl.replace(/\/$/, "");
+
+  // When the UI is opened over the LAN, loopback points at the user's device,
+  // not the machine running FastAPI. Keep local development convenient while
+  // directing LAN clients to the backend on the same host.
+  if (typeof window !== "undefined") {
+    const { hostname, protocol } = window.location;
+    return `${protocol === "https:" ? "https:" : "http:"}//${hostname}:8000`;
+  }
+  return "http://127.0.0.1:8000";
+}
+
+export const API_BASE_URL = getApiBaseUrl();
 
 export function authenticatedFetch(url, options = {}) {
   const headers = new Headers(options.headers || {});

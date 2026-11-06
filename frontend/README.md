@@ -18,8 +18,8 @@ Open [http://localhost:3000](http://localhost:3000) with your browser to see the
 
 ## Backend API
 
-The frontend connects to `http://127.0.0.1:8001` by default. To use a backend
-at a different address, set `NEXT_PUBLIC_API_BASE_URL` before starting or
+The browser connects to the backend on port `8000` at the same host used for
+the frontend. Set `NEXT_PUBLIC_API_BASE_URL` to use a backend at a different address before starting or
 building the frontend. Configure the backend's `FRONTEND_ORIGIN` to the
 frontend's origin; local `localhost` and `127.0.0.1` origins on the same port
 are both supported.

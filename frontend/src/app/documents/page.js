@@ -40,8 +40,6 @@ export default function DocumentsPage() {
   const [notice, setNotice] = useState("");
 
 async function loadAllSources() {
-    setListLoading(true);
-
     try {
       const documentData = await getDocuments();
 
@@ -65,15 +63,17 @@ async function loadAllSources() {
   }
 
   useEffect(() => {
-    loadAllSources();
+    const timer = window.setTimeout(() => loadAllSources(), 0);
+    return () => window.clearTimeout(timer);
   }, []);
 
 useEffect(() => {
-    setSelectedId(
-      new URLSearchParams(
-        window.location.search
-      ).get("selected") || ""
-    );
+    const timer = window.setTimeout(() => {
+      setSelectedId(
+        new URLSearchParams(window.location.search).get("selected") || ""
+      );
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, []);
 
   useEffect(() => {
@@ -124,6 +124,7 @@ async function handleFilesSelected(files) {
         }
       );
 
+      setListLoading(true);
       await loadAllSources();
 
       window.dispatchEvent(
@@ -184,6 +185,7 @@ async function handleDelete(document) {
         }
       );
 
+      setListLoading(true);
       await loadAllSources();
 
       window.dispatchEvent(
@@ -247,6 +249,7 @@ async function handleAddUrl(event) {
 
       setUrl("");
 
+      setListLoading(true);
       await loadAllSources();
 
       window.dispatchEvent(
@@ -690,9 +693,10 @@ return (
             <button
               type="button"
               className="app-primary-button"
-              onClick={
-                loadAllSources
-              }
+              onClick={() => {
+                setListLoading(true);
+                loadAllSources();
+              }}
             >
               Retry
             </button>

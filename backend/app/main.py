@@ -57,11 +57,12 @@ from app.rag.model_runtime import warmup_rag_models
 
 logger = logging.getLogger(__name__)
 PRODUCTION_FRONTEND_ORIGIN = "https://multi-document-research-assistant.vercel.app"
+LAN_FRONTEND_ORIGINS = {"http://10.97.199.219:3000"}
 
 
 def configured_frontend_origins(frontend_origin: str) -> list[str]:
     origin = frontend_origin.rstrip("/")
-    origins = [PRODUCTION_FRONTEND_ORIGIN]
+    origins = [PRODUCTION_FRONTEND_ORIGIN, *sorted(LAN_FRONTEND_ORIGINS)]
     if not origin:
         return origins
 

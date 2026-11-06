@@ -117,10 +117,10 @@ Knowledge workers spend an estimated 20% to 30% of their working hours searching
             |                               |                               |
             v                               v                               v
 +-----------------------+       +-----------------------+       +-----------------------+
-|        MONGODB        |       |       CHROMADB        |       |   GOOGLE GEMINI API   |
+|        MONGODB        |       |       CHROMADB        |       |   CONFIGURED LLM PROVIDER   |
 |   Persistent Storage  |       |   Local Vector Store  |       |      (LLM Provider)   |
 |-----------------------|       |-----------------------|       |-----------------------|
-| - Users & Credentials |       | - Collection:         |       | - gemini-3.8-flash    |
+| - Users & Credentials |       | - Collection:         |       | - Ollama / Groq / Gemini    |
 | - OTP Verification    |       |   research_chunks     |       | - Temperature: 0.2    |
 | - Document Metadata   |       | - Cosine Distance     |       | - Non-streaming       |
 | - Chat Conversations  |       | - Chunk Text          |       | - Strict Grounding    |
@@ -192,7 +192,7 @@ sequenceDiagram
     participant Ret as Hybrid Retriever
     participant Cross as CrossEncoder Reranker
     participant Chain as LangChain Answer Chain
-    participant Gemini as Google Gemini API
+    participant LLM as Configured LLM Provider
     participant DB as MongoDB
 
     User->>API: POST /chat/ {question, conversation_id?, attachment_document_ids?}
@@ -212,8 +212,8 @@ sequenceDiagram
     Ret-->>RAG: Filtered & ranked context chunks
     RAG->>Chain: generate_answer(question, context, conversation_history)
     Chain->>Chain: Fit context & history within token budget (~12k tokens)
-    Chain->>Gemini: Invoke ChatGoogleGenerativeAI (gemini-3.8-flash)
-    Gemini-->>Chain: Generated response string
+    Chain->>LLM: Invoke selected LangChain chat model
+    LLM-->>Chain: Generated response string
     Chain-->>RAG: Cleaned answer text
     RAG->>RAG: create_citations(retrieved_chunks, context, user_id)
     RAG-->>API: {answer, citations, conversation_id}
@@ -276,7 +276,7 @@ sequenceDiagram
 | **Primary Database Driver** | PyMongo | `4.18.1` | Asynchronous/synchronous interface to MongoDB cluster |
 | **Vector Database** | ChromaDB | `1.5.9` | Embedded persistent vector storage using HNSW cosine index |
 | **LLM Orchestration** | LangChain Core | `1.6.3` / `1.4.2` | Prompt templates, runnable sequences, and string output parsers |
-| **LLM Provider Adapter** | `langchain-google-genai` | `4.0.0` | Google Gemini API client integration (`ChatGoogleGenerativeAI`) |
+| **LLM Provider Adapters** | `langchain-ollama`, `langchain-groq`, `langchain-google-genai` | `1.1.0` / `1.1.3` / `4.0.0` | Configurable local Ollama, Groq, or Gemini; Ollama is the default |
 | **Dense Embeddings** | `sentence-transformers` | `6.1.0` | Local neural embedding generation for query and document chunks |
 | **Cross-Encoder Reranking**| `sentence-transformers` | `6.1.0` | Deep neural cross-attention score evaluation (`ms-marco-MiniLM-L6-v2`) |
 | **Deep Learning Framework**| PyTorch (`torch`) | `2.14.0` | Neural tensor computing backend for Sentence Transformers |
@@ -560,15 +560,11 @@ Retrieval in `backend/app/rag/retriever.py` follows a multi-stage hybrid ranking
 - **General Knowledge Fallback:** If no relevant sources exist and the query is a general knowledge question (e.g., *"What is photosynthesis?"*), the system permits a general answer while explicitly labeling it as ungrounded in the user's documents.
 
 ### 6.5 LLM Factory, Error Classification & Provider Handling
-- **Provider:** Google Gemini configured via LangChain `ChatGoogleGenerativeAI`.
-- **Model Name:** `gemini-3.8-flash`.
-- **Inference Parameters:** `temperature=0.2`, `streaming=False`.
-- **Error Classifier (`gemini_error_message`):** Automatically maps raw Google/gRPC API exceptions into human-readable diagnostics:
-  - `401 / 403`: Authentication failed; invalid `GEMINI_API_KEY`.
-  - `429 (quota)`: Project quota exhausted in Google AI Studio.
-  - `429 (rate limit)`: RPM/TPM rate limits exceeded.
-  - `404`: Model name unavailable or unsupported for this API key.
-  - `413 / 400`: Context window exceeded.
+- **Provider selection:** Set `LLM_PROVIDER` to `ollama`, `groq`, or `gemini`; the default is local Ollama.
+- **Model settings:** Ollama uses `OLLAMA_MODEL`; Groq uses `GROQ_MODEL`; Gemini uses the model configured in `backend/app/llm/llm_model.py`.
+- **Inference:** Chat returns a synchronous response; Ollama and Gemini use `temperature=0.2` and `streaming=False`.
+- **Provider errors:** The factory validates provider configuration and reports common authentication, rate limit, model, and timeout failures.
+
 
 ### 6.6 Citation Assembly & Deduplication
 - Retrieved chunks used in context generation are tagged with `[Source X: Filename, page Y]`.
@@ -893,8 +889,15 @@ FRONTEND_ORIGIN=http://localhost:3000
 # ==============================================================================
 # AI, EMBEDDINGS & VECTOR DATABASE
 # ==============================================================================
-# Google AI Studio API Key for Gemini Models
-GEMINI_API_KEY=your_google_ai_studio_api_key_here
+# LLM provider selection (Ollama is the default)
+LLM_PROVIDER=ollama
+OLLAMA_BASE_URL=http://127.0.0.1:11434
+OLLAMA_MODEL=llama3.2:latest
+
+# Optional cloud providers (configure the provider you select)
+GROQ_API_KEY=your_groq_api_key
+GROQ_MODEL=your_groq_model
+GEMINI_API_KEY=your_google_ai_studio_api_key
 
 # HuggingFace Sentence Transformers model name for dense vector embeddings
 EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
@@ -947,7 +950,7 @@ NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8000
 - **Python:** Version `3.12.x` (Python 3.12.10 recommended).
 - **Node.js:** Version `18.x` or `20.x` LTS with `npm`.
 - **MongoDB:** Active MongoDB Atlas cluster or local MongoDB instance (v6.0+).
-- **Google AI Studio Key:** Active API key with access to Gemini models.
+- **LLM provider:** Ollama is the default and needs an installed Ollama service/model; Groq or Gemini can be selected with their provider credentials.
 - **Cloudinary Account:** Free or paid account with Cloud Name, API Key, and Secret.
 - **SMTP Server:** Gmail App Password or SMTP gateway for OTP delivery.
 
@@ -1054,7 +1057,7 @@ Because standard registration (`/auth/register`) strictly assigns `role: "user"`
 ## 14. Testing, Linting & Code Verification
 
 ### 14.1 Backend Automated Unit Tests
-The backend test suite is constructed using Python's standard `unittest` framework and lives in `backend/tests/`. It covers 56 distinct test cases including RAG follow-up context resolution, hybrid retrieval diversity, Google OAuth code exchange, password setup security, and feedback workflows:
+The backend test suite is constructed using Python's standard `unittest` framework and lives in `backend/tests/`. It covers 137 test cases including RAG follow-up context resolution, hybrid retrieval diversity, Google OAuth code exchange, password setup security, and feedback workflows:
 
 ```powershell
 # From the backend directory with virtual environment activated:
@@ -1064,7 +1067,7 @@ python -m unittest discover -s tests -p "test_*.py" -v
 
 *Expected Verification Output:*
 ```text
-Ran 56 tests in 1.574s
+Ran 137 tests
 OK
 ```
 
@@ -1084,18 +1087,16 @@ npm run lint
 
 To maintain strict transparency, the following items represent verified code-level realities, incomplete modules, or architectural limitations in the current repository:
 
-1. **Empty Domain Model File:** `backend/app/models/url.py` is present in the repository as a **0-byte empty file**. Although URL ingestion is fully operational through `backend/app/urls/url_service.py`, this domain model was never populated.
-2. **Dependency Manifest Drift:** `backend/requirements.txt` contains unused dependencies—specifically `langchain-groq`, `groq`, and `langchain-ollama`. The active LLM runtime factory (`backend/app/llm/llm_model.py`) strictly instantiates `ChatGoogleGenerativeAI`.
+1. **Empty URL Domain Model:** `backend/app/models/url.py` is a zero-byte placeholder. URL ingestion works through `backend/app/urls/url_service.py` and does not currently use this model.
+2. **Partial Environment Template:** `backend/.env.example` documents LLM and retrieval settings but omits database, JWT, SMTP, Cloudinary, embedding, and Google OAuth variables required by enabled features.
+3. **Provider-Specific LLM Configuration:** `backend/app/llm/llm_model.py` supports Ollama, Groq, and Gemini. Ollama is the default; each provider requires its own local service or credentials.
 3. **No Optical Character Recognition (OCR):** The document parsing pipeline (`backend/app/documents/extractor.py`) relies exclusively on digital text extraction via `pypdf`. Scanned documents, image-only PDFs, and screenshots cannot be parsed and will fail with a "no readable text" error.
 4. **Dynamic JavaScript Scrape Limitations:** The URL ingestion engine fetches pages using standard Python `requests` and parses with BeautifulSoup. Websites requiring client-side JavaScript rendering (Single Page Applications) or anti-bot verification (Cloudflare/CAPTCHA) will yield empty or incomplete text.
 5. **No Direct Web Search Ingestion:** While `GET /urls/search` queries DuckDuckGo for public web results, there is no one-click "Ingest Search Result" button in the UI. Search results must be manually copied into the `/urls/add` input.
-6. **No Native Streaming Responses:** LLM generation (`ChatGoogleGenerativeAI`) is configured with `streaming=False`. Answers are synthesized and returned synchronously in a single JSON payload rather than being streamed character-by-character via Server-Sent Events (SSE).
+6. **No Native Streaming Responses:** Chat returns a completed answer in a single JSON response rather than streaming tokens with Server-Sent Events (SSE).
 7. **Local ChromaDB Persistence:** ChromaDB writes to a local filesystem directory (`./chroma_data`). In scaled or horizontally distributed production environments, vector data is tied to the container instance unless switched to a client/server Chroma architecture.
 8. **Client-Side Session Storage Security:** Application JWT tokens are stored in browser `localStorage`. While standard for lightweight applications, storing bearer tokens in `localStorage` increases exposure to Cross-Site Scripting (XSS) compared to HTTP-only, secure, SameSite cookies.
-9. **Frontend React 19 ESLint Issues:** Running `npm run lint` identifies 12 lint problems (5 errors, 7 warnings) related to React 19 / Next.js 16 compiler rules:
-   - Synchronous `setState` calls inside `useEffect` on `documents/page.js`, `dashboard/page.js`, and `register/verify/page.js`.
-   - Variable accessed before declaration in `history/page.js` (`loadConversations`).
-   - Use of `window.location.href` navigation instead of Next.js `useRouter().push()` in authentication views.
+9. **Frontend ESLint Navigation Warnings:** `npm run lint` may report warnings where internal pages use `window.location.href`; these can be changed to Next.js router navigation.
 10. **Feedback Lifecycle Limitation:** The feedback module implements an `is_read` binary toggle but lacks administrative resolution workflows (e.g., status flags such as `in_progress`, `resolved`, or admin response comments).
 
 ---

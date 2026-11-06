@@ -447,6 +447,7 @@ class RetrievalBehaviorTests(unittest.TestCase):
             configured_frontend_origins("http://localhost:3000"),
             [
                 "https://multi-document-research-assistant.vercel.app",
+                "http://10.97.199.219:3000",
                 "http://localhost:3000",
                 "http://127.0.0.1:3000",
             ],
@@ -455,12 +456,16 @@ class RetrievalBehaviorTests(unittest.TestCase):
             configured_frontend_origins("https://research.example"),
             [
                 "https://multi-document-research-assistant.vercel.app",
+                "http://10.97.199.219:3000",
                 "https://research.example",
             ],
         )
         self.assertEqual(
             configured_frontend_origins(""),
-            ["https://multi-document-research-assistant.vercel.app"],
+            [
+                "https://multi-document-research-assistant.vercel.app",
+                "http://10.97.199.219:3000",
+            ],
         )
 
     def test_resume_comparison_phrasings_enter_resume_retrieval(self):

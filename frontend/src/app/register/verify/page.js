@@ -12,14 +12,11 @@ export default function VerifyPage() {
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    const savedEmail =
-      sessionStorage.getItem(
-        "registration_email"
-      );
-
-    if (savedEmail) {
-      setEmail(savedEmail);
-    }
+    const timer = window.setTimeout(() => {
+      const savedEmail = sessionStorage.getItem("registration_email");
+      if (savedEmail) setEmail(savedEmail);
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, []);
 
   async function verify(event) {
